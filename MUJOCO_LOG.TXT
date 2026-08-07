@@ -1,0 +1,2 @@
+WARNING Wed Jul 29 13:37:22 2026: Nan, Inf or huge value in CTRL at ACTUATOR 11. The simulation is unstable. Time = 11.7000.
+
