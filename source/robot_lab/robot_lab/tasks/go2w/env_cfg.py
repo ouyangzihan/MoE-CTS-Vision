@@ -56,14 +56,14 @@ D435I_DEPTH_IMAGE_SHAPE = (D435I_DEPTH_HEIGHT, D435I_DEPTH_WIDTH)
 D435I_CAMERA_UPDATE_HZ = 50.0
 D435I_CAMERA_UPDATE_PERIOD = 1.0 / D435I_CAMERA_UPDATE_HZ
 # Depth age in sensor frames @ 50 Hz (1 frame = 20 ms) → 20–60 ms.
-D435I_CAMERA_MIN_DELAY_FRAMES = 3
-D435I_CAMERA_MAX_DELAY_FRAMES = 7
+D435I_CAMERA_MIN_DELAY_FRAMES = 2
+D435I_CAMERA_MAX_DELAY_FRAMES = 6
 D435I_CAMERA_MIN_DELAY = D435I_CAMERA_MIN_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
 D435I_CAMERA_MAX_DELAY = D435I_CAMERA_MAX_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
 D435I_CAMERA_POS_BASE = (0.3264636, -0.00003, 0.0947706)
-D435I_CAMERA_POS_RANDOMIZATION_M = 0.02
+D435I_CAMERA_POS_RANDOMIZATION_M = 0.01
 D435I_CAMERA_ROT_BASE = (0.9612616959383189, 0.0, 0.27563735581699916, 0.0)
-D435I_CAMERA_RPY_RANDOMIZATION_DEG = 10.0
+D435I_CAMERA_RPY_RANDOMIZATION_DEG = 5.0
 
 LEG_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES, preserve_order=True)
 WHEEL_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES, preserve_order=True)
@@ -231,7 +231,7 @@ class CommandsCfg:
         only_positive_lin_vel_x=True,
         # 10% stand, 20% reverse-into-target (neg vx + heading+π), 70% forward.
         rel_standing_envs=0.1,
-        rel_reverse_envs=0.1,
+        rel_reverse_envs=0.3,
         reverse_lin_vel_x_abs_max=1.0,  # reverse clamp [-1, 0]; yaw unchanged
         # ranges=mdp.PoseVelocityCommandCfg.Ranges(
         #     lin_vel_x=(0.0, 0.5),
@@ -248,7 +248,7 @@ class CommandsCfg:
             lin_vel_y=(0.0, 0.0),
             ang_vel_z=(-1.5, 1.5),
         ),
-        command_range_expand_interval=500,
+        command_range_expand_interval=1000,
         command_range_expand=mdp.PoseVelocityCommandCfg.CommandRangeExpandCfg(
             lin_vel_x=0.1,
             lin_vel_y=0.0,
@@ -506,6 +506,15 @@ class D435iObservationsCfg(ObservationsCfg):
                 "enable_noise": True,
                 "noise_std": 0.02,
                 "dropout_prob": 0.2,
+                # MGDP-style extras (active only when use_cfg_noise_overrides=True).
+                "depth_dependent_noise_scale": 0.0,
+                "edge_speckle_prob": 0.0,
+                "temporal_flicker_std": 0.0,
+                "hole_blob_prob": 0.0,
+                "hole_blob_size_range": (3, 12),
+                "use_cfg_noise_overrides": False,
+                # None → far (legacy). MGDP aux mode sets 0.0 (holes as near/invalid).
+                "dropout_fill_value": None,
             },
             clip=(0.0, 5.0),
             scale=0.5,
@@ -515,7 +524,48 @@ class D435iObservationsCfg(ObservationsCfg):
             self.enable_corruption = True
             self.concatenate_terms = True
 
+    @configclass
+    class CleanDepthCfg(ObsGroup):
+        """Undamped delayed depth target for denoising aux loss (not fed to actor)."""
+
+        depth_image = ObsTerm(
+            func=process_depth_image,
+            params={
+                "sensor_cfg": SceneEntityCfg("front_depth_camera"),
+                "data_type": "distance_to_image_plane",
+                "image_shape": D435I_DEPTH_IMAGE_SHAPE,
+                "max_depth": D435I_DEPTH_MAX,
+                "normalize": True,
+                "use_delay": True,
+                "enable_noise": False,
+            },
+            clip=(0.0, 5.0),
+            scale=0.5,
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    @configclass
+    class HeightMapCfg(ObsGroup):
+        """Privileged local elevation map (17x11) for height reconstruction / alignment."""
+
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            clip=(-1.0, 1.0),
+            scale=2.5,
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
     depth: DepthCfg = DepthCfg()
+    # Populated only when Go2WD435iEnvCfg.use_mgdp_depth_aux is True.
+    clean_depth: CleanDepthCfg | None = None
+    height_map: HeightMapCfg | None = None
 
 
 @configclass
@@ -626,13 +676,13 @@ class RewardsCfg:
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp,
-        weight=4.0,  # starts 2x; curriculum anneals to 2.0 by iter 500
-        params={"command_name": "base_velocity", "std": 0.8},
+        weight=8.0,  # starts 2x; curriculum anneals to 2.0 by iter 500
+        params={"command_name": "base_velocity", "std": 0.7},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=2.0,  # starts 2x; curriculum anneals to 1.0 by iter 500
-        params={"command_name": "base_velocity", "std": 0.8},
+        weight=4.0,  # starts 2x; curriculum anneals to 1.0 by iter 500
+        params={"command_name": "base_velocity", "std": 0.7},
     )
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-1.0)#-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.025)#-0.05)
@@ -648,6 +698,8 @@ class RewardsCfg:
             # 0.8 x 0.55 m at 0.1 m resolution gives 54 rays; four
             # contacts therefore have the same total weight as all rays.
             "contact_point_weight": 20.,
+            # Side-to-side (roll) tilt penalized 2x front-to-back (pitch).
+            "lateral_scale": 2.0,
         },
     )
     joint_acc_l2 = RewTerm(
@@ -686,6 +738,16 @@ class RewardsCfg:
         weight=-.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME), "threshold": 1.0},
     )
+    # Penalize sideways (body-y) slip at contacting wheels; curriculum ramps to -0.08.
+    wheel_lateral_drag = RewTerm(
+        func=mdp.wheel_lateral_drag,
+        weight=-0.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
+            "threshold": 1.0,
+        },
+    )
     joint_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-2.0,
@@ -721,7 +783,7 @@ class RewardsCfg:
             "stand_cmd_idxs": [0, 1],
         },
     )
-    terrain_level_progress = RewTerm(func=mdp.terrain_level_progress, weight=5.)
+    terrain_level_progress = RewTerm(func=mdp.terrain_level_progress, weight=6.)
     # Hiking-in-the-Wild: discourage freezing / backing up under forward commands.
     dont_wait = RewTerm(
         func=mdp.dont_wait,
@@ -758,13 +820,15 @@ class CurriculumCfg:
     """
 
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+    # Enabled in Go2WD435iEnvCfg when use_mgdp_depth_aux is True.
+    depth_noise = None
     step_height_range = CurrTerm(
         func=mdp.step_height_range_curriculum,
         params={
-            "start_it": 10000,
-            "interval": 500,
+            "start_it": 100000, # 10000,
+            "interval": 5000, # 500,
             "delta": 0.01,
-            "max_lower": 0.15,
+            "max_lower": 0.01,
             "initial_lower": 0.0,
             "upper": 0.2,
             "mesh_lower": 0.0,
@@ -777,7 +841,7 @@ class CurriculumCfg:
         params={
             "term_name": "track_lin_vel_xy_exp",
             "initial_weight": 4.0,
-            "final_weight": 2.0,
+            "final_weight": 4.0,
             "start_it": 0,
             "end_it": 1000,
         },
@@ -787,7 +851,7 @@ class CurriculumCfg:
         params={
             "term_name": "track_ang_vel_z_exp",
             "initial_weight": 2.0,
-            "final_weight": 1.0,
+            "final_weight": 2.0,
             "start_it": 0,
             "end_it": 1000,
         },
@@ -798,8 +862,8 @@ class CurriculumCfg:
             "term_name": "joint_pos_penalty_l1",
             "initial_weight": -0.008,
             "final_weight": -0.1,
-            "start_it": 2500,
-            "end_it": 5000,
+            "start_it": 5000,
+            "end_it": 20000,
         },
     )
     hip_pos_penalty_l1 = CurrTerm(
@@ -807,9 +871,9 @@ class CurriculumCfg:
         params={
             "term_name": "hip_pos_penalty_l1",
             "initial_weight": -0.04,
-            "final_weight": -0.1,
-            "start_it": 2500,
-            "end_it": 5000,
+            "final_weight": -0.5,
+            "start_it": 5000,
+            "end_it": 20000,
         },
     )
     wheels_not_in_contact = CurrTerm(
@@ -817,9 +881,19 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.15,
-            "start_it": 2500,
-            "end_it": 5000,
+            "final_weight": -0.4, #-0.25
+            "start_it": 5000,
+            "end_it": 20000,
+        },
+    )
+    wheel_lateral_drag = CurrTerm(
+        mdp.gradual_reward_weight_modification,
+        params={
+            "term_name": "wheel_lateral_drag",
+            "initial_weight": -0.0,
+            "final_weight": -0.08,
+            "start_it": 5000,
+            "end_it": 15000,
         },
     )
     local_terrain_tilt_angle = CurrTerm(
@@ -828,17 +902,27 @@ class CurriculumCfg:
             "term_name": "local_terrain_tilt_angle",
             "initial_weight": -0.2,
             "final_weight": -0.4,
-            "start_it": 2500,
-            "end_it": 5000,
+            "start_it": 5000,
+            "end_it": 10000,
+        },
+    )
+    terrain_level_progress = CurrTerm(
+        mdp.gradual_reward_weight_modification,
+        params={
+            "term_name": "terrain_level_progress",
+            "initial_weight": 10.0,
+            "final_weight": 5.0,
+            "start_it": 0,
+            "end_it": 15000,
         },
     )
     base_linear_velocity = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "lin_vel_z_l2", "initial_weight": -2.0, "final_weight": -0.0, "start_it": 0, "end_it": 1500},
+        params={"term_name": "lin_vel_z_l2", "initial_weight": -2.0, "final_weight": -0.0, "start_it": 0, "end_it": 3000},
     )
     base_height_l2 = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "base_height_l2", "initial_weight": -1.0, "final_weight": -20.0, "start_it": 0, "end_it": 5000},
+        params={"term_name": "base_height_l2", "initial_weight": -1.0, "final_weight": -20.0, "start_it": 0, "end_it": 10000},
     )
 
 
@@ -871,8 +955,8 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
     # Proprio observation delay (IMU ang-vel / gravity, joint pos & vel).
     # Applied at physics rate (sim.dt), distinct from actuator cmd delay and
     # from D435i camera max_delay. Set max to 0 to disable.
-    obs_delay_min_s: float = 0.01
-    obs_delay_max_s: float = 0.02
+    obs_delay_min_s: float = 0.0
+    obs_delay_max_s: float = 0.005
 
     def __post_init__(self):
         """Post initialization."""
@@ -905,10 +989,12 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
                 "joint_pos_penalty_l1",
                 "hip_pos_penalty_l1",
                 "wheels_not_in_contact",
+                "wheel_lateral_drag",
                 # "base_tilt_angle",
                 "local_terrain_tilt_angle",
                 "base_linear_velocity",
                 "base_height_l2",
+                "terrain_level_progress",
             )
             for curriculum_term_name in reward_weight_terms:
                 curriculum_term = getattr(self.curriculum, curriculum_term_name)
@@ -932,13 +1018,70 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
 class Go2WD435iEnvCfg(Go2WEnvCfg):
     """Go2W environment variant with the D435i front depth camera enabled."""
 
-    scene: Go2WD435iSceneCfg = Go2WD435iSceneCfg(num_envs=1024, env_spacing=0.5)
+    scene: Go2WD435iSceneCfg = Go2WD435iSceneCfg(num_envs=512, env_spacing=0.5)
     observations: D435iObservationsCfg = D435iObservationsCfg()
+    # Master switch for MGDP-style depth aux training (denoise / height recon /
+    # geometry alignment / harsher noise curriculum). False = current pipeline.
+    use_mgdp_depth_aux: bool = True
+    # Runtime noise overrides written by depth_noise_curriculum when aux is on.
+    depth_noise_std: float = 0.02
+    depth_dropout_prob: float = 0.2
+    depth_dependent_noise_scale: float = 0.0
+    depth_edge_speckle_prob: float = 0.0
+    depth_temporal_flicker_std: float = 0.0
+    depth_hole_blob_prob: float = 0.0
+    depth_hole_blob_size_range: tuple[int, int] = (3, 12)
+    # Official MGDP dropout zeros holes; None keeps legacy far-fill when aux is off.
+    depth_dropout_fill_value: float | None = None
 
     def __post_init__(self):
         super().__post_init__()
         if self.scene.front_depth_camera is not None:
             self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
+
+        depth_term = self.observations.depth.depth_image
+        if self.use_mgdp_depth_aux:
+            self.observations.clean_depth = D435iObservationsCfg.CleanDepthCfg()
+            self.observations.height_map = D435iObservationsCfg.HeightMapCfg()
+            depth_term.params["use_cfg_noise_overrides"] = True
+            depth_term.params["noise_std"] = self.depth_noise_std
+            depth_term.params["dropout_prob"] = self.depth_dropout_prob
+            depth_term.params["depth_dependent_noise_scale"] = self.depth_dependent_noise_scale
+            depth_term.params["edge_speckle_prob"] = self.depth_edge_speckle_prob
+            depth_term.params["temporal_flicker_std"] = self.depth_temporal_flicker_std
+            depth_term.params["hole_blob_prob"] = self.depth_hole_blob_prob
+            depth_term.params["hole_blob_size_range"] = self.depth_hole_blob_size_range
+            # Match MGDP: dropout → 0 unless user overrides.
+            if self.depth_dropout_fill_value is None:
+                self.depth_dropout_fill_value = 0.0
+            depth_term.params["dropout_fill_value"] = self.depth_dropout_fill_value
+            self.curriculum.depth_noise = CurrTerm(
+                func=mdp.depth_noise_curriculum,
+                params={
+                    "start_it": 0,
+                    "end_it": 10000,
+                    "num_steps_per_iter": 24,
+                    "noise_std_range": (0.02, 0.02), # (0.02, 0.06),
+                    "dropout_prob_range": (0.2, 0.2),
+                    "depth_dependent_noise_scale_range": (0.0, 0.0), # (0.0, 1.0),
+                    "edge_speckle_prob_range": (0.0, 0.0), # (0.0, 0.08),
+                    "temporal_flicker_std_range": (0.0, 0.0), # (0.0, 0.03),
+                    "hole_blob_prob_range": (0.0, 0.0), # (0.0, 0.15),
+                },
+            )
+        else:
+            self.observations.clean_depth = None
+            self.observations.height_map = None
+            depth_term.params["use_cfg_noise_overrides"] = False
+            depth_term.params["noise_std"] = 0.02
+            depth_term.params["dropout_prob"] = 0.2
+            depth_term.params["depth_dependent_noise_scale"] = 0.0
+            depth_term.params["edge_speckle_prob"] = 0.0
+            depth_term.params["temporal_flicker_std"] = 0.0
+            depth_term.params["hole_blob_prob"] = 0.0
+            depth_term.params["dropout_fill_value"] = None
+            if getattr(self.curriculum, "depth_noise", None) is not None:
+                self.curriculum.depth_noise = None
 
 
 @configclass

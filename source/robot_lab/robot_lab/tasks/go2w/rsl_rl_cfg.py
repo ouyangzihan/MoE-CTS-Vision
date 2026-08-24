@@ -32,6 +32,13 @@ class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
         self.algorithm.symmetry_cfg = Go2WMoeCtsSymmetryCfg()
         # Offline MoE CTS L/R data augmentation (batch doubling).
         self.algorithm.symmetry_cfg.use_symmetric_augmentation = True
+        # Defaults when Go2WD435iEnvCfg.use_mgdp_depth_aux is enabled via train.py sync.
+        # Leave coefs at 0 here so the current pipeline is unchanged until the env switch is on.
+        self.policy.enable_depth_aux = False
+        self.algorithm.depth_denoise_coef = 0.0
+        self.algorithm.height_recon_coef = 0.0
+        self.algorithm.depth_align_coef = 0.0
+        self.algorithm.depth_align_loss_type = "infonce"
 
 
 @configclass

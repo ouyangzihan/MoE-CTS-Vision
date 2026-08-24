@@ -144,6 +144,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         if enable_pose_velocity_target_vis(env_cfg):
             print("[INFO] PoseVelocityCommand target flat-patch visualization enabled.")
+
+    # Keep policy depth-aux heads in sync with the env master switch (needed to load aux-trained ckpts).
+    if hasattr(env_cfg, "use_mgdp_depth_aux"):
+        enabled = bool(env_cfg.use_mgdp_depth_aux)
+        if hasattr(agent_cfg, "policy") and hasattr(agent_cfg.policy, "enable_depth_aux"):
+            agent_cfg.policy.enable_depth_aux = enabled
+        if hasattr(agent_cfg, "algorithm"):
+            if not enabled:
+                agent_cfg.algorithm.depth_denoise_coef = 0.0
+                agent_cfg.algorithm.height_recon_coef = 0.0
+                agent_cfg.algorithm.depth_align_coef = 0.0
+
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else 64
 
     # set the environment seed

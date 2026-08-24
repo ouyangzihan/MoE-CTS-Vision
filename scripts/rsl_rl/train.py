@@ -129,6 +129,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         if enable_pose_velocity_target_vis(env_cfg):
             print("[INFO] PoseVelocityCommand target flat-patch visualization enabled.")
+
+    # Sync MGDP-style depth aux training from env master switch → policy/algorithm.
+    # When False (default), the current D435i MoE-CTS pipeline is unchanged.
+    if hasattr(env_cfg, "use_mgdp_depth_aux"):
+        enabled = bool(env_cfg.use_mgdp_depth_aux)
+        if hasattr(agent_cfg, "policy") and hasattr(agent_cfg.policy, "enable_depth_aux"):
+            agent_cfg.policy.enable_depth_aux = enabled
+        if hasattr(agent_cfg, "algorithm"):
+            if enabled:
+                # Default MGDP-inspired aux weights (override in agent cfg if needed).
+                if getattr(agent_cfg.algorithm, "depth_denoise_coef", 0.0) == 0.0:
+                    agent_cfg.algorithm.depth_denoise_coef = 1.0
+                if getattr(agent_cfg.algorithm, "height_recon_coef", 0.0) == 0.0:
+                    agent_cfg.algorithm.height_recon_coef = 0.5
+                if getattr(agent_cfg.algorithm, "depth_align_coef", 0.0) == 0.0:
+                    agent_cfg.algorithm.depth_align_coef = 0.3
+                # Official MGDP uses one-way InfoNCE (height→depth).
+                if not getattr(agent_cfg.algorithm, "depth_align_loss_type", None):
+                    agent_cfg.algorithm.depth_align_loss_type = "infonce"
+            else:
+                agent_cfg.algorithm.depth_denoise_coef = 0.0
+                agent_cfg.algorithm.height_recon_coef = 0.0
+                agent_cfg.algorithm.depth_align_coef = 0.0
+        print(f"[INFO] use_mgdp_depth_aux={enabled} "
+              f"(denoise={getattr(getattr(agent_cfg, 'algorithm', None), 'depth_denoise_coef', None)}, "
+              f"height={getattr(getattr(agent_cfg, 'algorithm', None), 'height_recon_coef', None)}, "
+              f"align={getattr(getattr(agent_cfg, 'algorithm', None), 'depth_align_coef', None)})")
+
     agent_cfg_dict = agent_cfg.to_dict()
     agent_cfg_dict["robogauge"] = {
         "enabled": args_cli.robogauge,
@@ -225,6 +253,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+        if agent_cfg.resume:
+            loaded_iter = int(getattr(runner, "current_learning_iteration", 0) or 0)
+            print(f"[INFO] Resuming from checkpoint iteration {loaded_iter}.")
+            # Always restore common_step_counter + iteration-based curriculum
+            # (reward weights, depth noise, step-height, command ranges). Do not
+            # gate on use_reward_weight_curriculum: depth_noise stays active when
+            # that flag is False (e.g. Go2WD435iEnvCfg.use_mgdp_depth_aux).
+            from robot_lab.tasks.go2.mdp.curriculums import resume_iteration_curriculum
+
+            num_steps_per_iter = int(getattr(agent_cfg, "num_steps_per_env", 24))
+            common_step_counter = resume_iteration_curriculum(
+                env.unwrapped,
+                loaded_iter,
+                num_steps_per_iter=num_steps_per_iter,
+            )
+            print(
+                "[INFO] Restored iteration curriculum: "
+                f"common_step_counter={common_step_counter} "
+                f"(iter={loaded_iter}, steps/iter={num_steps_per_iter})."
+            )
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)

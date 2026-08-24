@@ -276,13 +276,75 @@ def add_depth_noise(
     max_depth: float,
     noise_std: float = 0.0,
     dropout_prob: float = 0.0,
+    depth_dependent_noise_scale: float = 0.0,
+    edge_speckle_prob: float = 0.0,
+    temporal_flicker_std: float = 0.0,
+    prev_depth: torch.Tensor | None = None,
+    hole_blob_prob: float = 0.0,
+    hole_blob_size_range: tuple[int, int] = (3, 12),
+    dropout_fill_value: float | None = None,
 ) -> torch.Tensor:
-    """Apply simple synthetic noise to ray-caster depth images."""
-    if noise_std > 0.0:
-        depth = depth + torch.randn_like(depth) * noise_std
+    """Apply synthetic depth noise (Gaussian, dropout, and optional outdoor artifacts).
+
+    Args:
+        depth: Depth images ``[B, H, W]`` in meters (pre-normalization).
+        max_depth: Far-plane / invalid fill value.
+        noise_std: Base Gaussian std (meters).
+        dropout_prob: Per-pixel Bernoulli hole probability.
+        dropout_fill_value: Value written into dropout holes. ``None`` → ``max_depth``
+            (legacy). Official MGDP uses ``0.0`` (near / invalid).
+        depth_dependent_noise_scale: Extra Gaussian std scale as
+            ``noise_std * scale * (depth / max_depth)``.
+        edge_speckle_prob: Probability of writing far values along strong depth edges.
+        temporal_flicker_std: Blend previous noisy frame with Gaussian jitter.
+        prev_depth: Previous noisy depth (same shape) for temporal flicker.
+        hole_blob_prob: Per-env probability of stamping a contiguous far hole.
+        hole_blob_size_range: Inclusive ``(min, max)`` blob side length in pixels.
+    """
+    noisy = depth
+    if noise_std > 0.0 or depth_dependent_noise_scale > 0.0:
+        gauss = torch.randn_like(noisy) * noise_std
+        if depth_dependent_noise_scale > 0.0:
+            gauss = gauss + torch.randn_like(noisy) * (
+                noise_std * depth_dependent_noise_scale * (noisy / max(max_depth, 1e-6))
+            )
+        noisy = noisy + gauss
+
+    if edge_speckle_prob > 0.0:
+        # Finite-difference magnitude as a cheap edge detector.
+        dx = (noisy[..., :, 1:] - noisy[..., :, :-1]).abs()
+        dy = (noisy[..., 1:, :] - noisy[..., :-1, :]).abs()
+        edge = torch.zeros_like(noisy)
+        edge[..., :, 1:] = torch.maximum(edge[..., :, 1:], dx)
+        edge[..., :, :-1] = torch.maximum(edge[..., :, :-1], dx)
+        edge[..., 1:, :] = torch.maximum(edge[..., 1:, :], dy)
+        edge[..., :-1, :] = torch.maximum(edge[..., :-1, :], dy)
+        edge_mask = (edge > 0.05 * max_depth) & (torch.rand_like(noisy) < edge_speckle_prob)
+        noisy = torch.where(edge_mask, torch.full_like(noisy, max_depth), noisy)
+
+    if hole_blob_prob > 0.0:
+        b, h, w = noisy.shape
+        blob_hit = torch.rand(b, device=noisy.device) < hole_blob_prob
+        if torch.any(blob_hit):
+            lo, hi = hole_blob_size_range
+            hi = max(hi, lo)
+            for env_i in torch.nonzero(blob_hit, as_tuple=False).flatten().tolist():
+                side = int(torch.randint(lo, hi + 1, (1,), device=noisy.device).item())
+                side = max(1, min(side, h, w))
+                y0 = int(torch.randint(0, h - side + 1, (1,), device=noisy.device).item())
+                x0 = int(torch.randint(0, w - side + 1, (1,), device=noisy.device).item())
+                noisy[env_i, y0 : y0 + side, x0 : x0 + side] = max_depth
+
     if dropout_prob > 0.0:
-        depth = depth.masked_fill(torch.rand_like(depth) < dropout_prob, max_depth)
-    return depth.clamp_(0.0, max_depth)
+        fill = max_depth if dropout_fill_value is None else float(dropout_fill_value)
+        noisy = noisy.masked_fill(torch.rand_like(noisy) < dropout_prob, fill)
+
+    if temporal_flicker_std > 0.0 and prev_depth is not None and prev_depth.shape == noisy.shape:
+        mix = torch.rand(noisy.shape[0], 1, 1, device=noisy.device).clamp(0.0, 0.35)
+        flicker = torch.randn_like(noisy) * temporal_flicker_std
+        noisy = (1.0 - mix) * noisy + mix * (prev_depth + flicker)
+
+    return noisy.clamp_(0.0, max_depth)
 
 
 def process_depth_image(
@@ -297,6 +359,13 @@ def process_depth_image(
     enable_augmentation: bool | None = None,
     noise_std: float = 0.0,
     dropout_prob: float = 0.0,
+    depth_dependent_noise_scale: float = 0.0,
+    edge_speckle_prob: float = 0.0,
+    temporal_flicker_std: float = 0.0,
+    hole_blob_prob: float = 0.0,
+    hole_blob_size_range: tuple[int, int] = (3, 12),
+    use_cfg_noise_overrides: bool = False,
+    dropout_fill_value: float | None = None,
 ) -> torch.Tensor:
     """Read ray-caster depth, optionally delayed/noisy, and flatten it."""
     camera = env.scene.sensors[sensor_cfg.name]
@@ -332,7 +401,35 @@ def process_depth_image(
     if enable_augmentation is not None:
         enable_noise = enable_augmentation
     if enable_noise:
-        depth = add_depth_noise(depth, max_depth=max_depth, noise_std=noise_std, dropout_prob=dropout_prob)
+        if use_cfg_noise_overrides:
+            noise_std = float(getattr(env.cfg, "depth_noise_std", noise_std))
+            dropout_prob = float(getattr(env.cfg, "depth_dropout_prob", dropout_prob))
+            depth_dependent_noise_scale = float(
+                getattr(env.cfg, "depth_dependent_noise_scale", depth_dependent_noise_scale)
+            )
+            edge_speckle_prob = float(getattr(env.cfg, "depth_edge_speckle_prob", edge_speckle_prob))
+            temporal_flicker_std = float(getattr(env.cfg, "depth_temporal_flicker_std", temporal_flicker_std))
+            hole_blob_prob = float(getattr(env.cfg, "depth_hole_blob_prob", hole_blob_prob))
+            hole_blob_size_range = tuple(getattr(env.cfg, "depth_hole_blob_size_range", hole_blob_size_range))
+            if hasattr(env.cfg, "depth_dropout_fill_value"):
+                dropout_fill_value = getattr(env.cfg, "depth_dropout_fill_value")
+
+        prev_key = f"_depth_noise_prev_{sensor_cfg.name}"
+        prev_depth = getattr(env, prev_key, None)
+        depth = add_depth_noise(
+            depth,
+            max_depth=max_depth,
+            noise_std=noise_std,
+            dropout_prob=dropout_prob,
+            depth_dependent_noise_scale=depth_dependent_noise_scale,
+            edge_speckle_prob=edge_speckle_prob,
+            temporal_flicker_std=temporal_flicker_std,
+            prev_depth=prev_depth,
+            hole_blob_prob=hole_blob_prob,
+            hole_blob_size_range=hole_blob_size_range,
+            dropout_fill_value=dropout_fill_value,
+        )
+        setattr(env, prev_key, depth.detach().clone())
 
     if normalize:
         depth = depth / max_depth

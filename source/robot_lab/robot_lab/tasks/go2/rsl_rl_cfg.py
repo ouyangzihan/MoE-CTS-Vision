@@ -63,6 +63,14 @@ class RslRlMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsActorCriticCfg):
     cnn_pooled_shape = (15, 15)
     gru_hidden_dim = 225
     gru_num_layers = 1
+    # MGDP-style aux heads (denoise / height recon / align). Synced from
+    # Go2WD435iEnvCfg.use_mgdp_depth_aux in train.py; keep False for current pipeline.
+    enable_depth_aux = False
+    height_map_shape = (17, 11)
+    depth_align_dim = 32
+    clean_depth_obs_group = "clean_depth"
+    height_map_obs_group = "height_map"
+
 
 @configclass
 class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
@@ -74,8 +82,8 @@ class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     entropy_coef = 0.01
     num_learning_epochs = 5
     num_mini_batches = 4
-    learning_rate = 1e-3
-    student_encoder_learning_rate = 1e-3
+    learning_rate = 5e-4 # 1e-3
+    student_encoder_learning_rate = 5e-4 # 1e-3
     schedule = "adaptive"
     gamma = 0.99
     lam = 0.95
@@ -85,6 +93,12 @@ class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     max_grad_norm = 1.0
     teacher_env_ratio = 0.75  # percentage of envs assigned to teacher
     symmetry_cfg = MoeCtsSymmetryCfg()
+    # Depth aux losses (active when enable_depth_aux and coefs > 0).
+    depth_denoise_coef = 0.0
+    height_recon_coef = 0.0
+    depth_align_coef = 0.0
+    depth_align_loss_type = "infonce"  # MGDP default; also supports "mse"
+    depth_align_temperature = 0.1
 
 @configclass
 class MoECTSRunnerCfg(RslRlOnPolicyRunnerCfg):

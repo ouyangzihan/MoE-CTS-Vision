@@ -35,14 +35,27 @@ class DepthCNNGRUEncoder(nn.Module):
         gru_hidden_dim: int = 225,
         gru_num_layers: int = 1,
         activation: str = "elu",
+        enable_depth_aux: bool = False,
+        height_map_shape: tuple[int, int] = (17, 11),
+        align_dim: int = 32,
+        # Match Isaac ObsTerm scales: depth clip→scale 0.5; height clip→scale 2.5.
+        depth_obs_scale: float = 0.5,
+        height_obs_scale: float = 2.5,
     ) -> None:
         super().__init__()
         self.image_shape = tuple(image_shape)
         self.in_channels = in_channels
         self.pooled_shape = tuple(pooled_shape)
+        self.cnn_channels = tuple(cnn_channels)
         self.cnn_feature_dim = self.pooled_shape[0] * self.pooled_shape[1]
         self.hidden_dim = gru_hidden_dim
         self.num_layers = gru_num_layers
+        self.enable_depth_aux = enable_depth_aux
+        self.height_map_shape = tuple(height_map_shape)
+        self.height_map_dim = self.height_map_shape[0] * self.height_map_shape[1]
+        self.align_dim = align_dim
+        self.depth_obs_scale = float(depth_obs_scale)
+        self.height_obs_scale = float(height_obs_scale)
 
         act = nn.ELU if activation == "elu" else nn.ReLU
         layers: list[nn.Module] = []
@@ -66,6 +79,41 @@ class DepthCNNGRUEncoder(nn.Module):
         self.gru = nn.GRU(self.cnn_feature_dim, gru_hidden_dim, gru_num_layers)
         self.hidden_state: torch.Tensor | None = None
 
+        self.depth_decoder: nn.Module | None = None
+        self.height_decoder: nn.Module | None = None
+        self.depth_align_proj: nn.Module | None = None
+        self.height_align_encoder: nn.Module | None = None
+        if enable_depth_aux:
+            # MGDP uses Sigmoid depth / Tanh height; we scale into ObsTerm space.
+            self.depth_decoder = nn.Sequential(
+                nn.Conv2d(last_channels, 32, kernel_size=3, padding=1),
+                act(),
+                nn.Upsample(size=self.image_shape, mode="bilinear", align_corners=False),
+                nn.Conv2d(32, 16, kernel_size=3, padding=1),
+                act(),
+                nn.Conv2d(16, 1, kernel_size=1),
+                nn.Sigmoid(),
+            )
+            pooled_flat = last_channels * self.pooled_shape[0] * self.pooled_shape[1]
+            self.height_decoder = nn.Sequential(
+                nn.Linear(pooled_flat, 256),
+                act(),
+                nn.Linear(256, self.height_map_dim),
+                nn.Tanh(),
+            )
+            # Align CNN (pre-GRU) visual token with height, matching MGDP encoder-token InfoNCE.
+            cnn_flat = last_channels * self.pooled_shape[0] * self.pooled_shape[1]
+            self.depth_align_proj = nn.Sequential(
+                nn.Linear(cnn_flat, align_dim),
+                L2Norm(),
+            )
+            self.height_align_encoder = nn.Sequential(
+                nn.Linear(self.height_map_dim, 128),
+                act(),
+                nn.Linear(128, align_dim),
+                L2Norm(),
+            )
+
     def reset(self, dones: torch.Tensor | None = None) -> None:
         if dones is None:
             self.hidden_state = None
@@ -85,10 +133,14 @@ class DepthCNNGRUEncoder(nn.Module):
             raise ValueError(f"Unsupported depth image shape: {tuple(image.shape)}")
         return image
 
-    def _encode_cnn(self, image: torch.Tensor, leading_shape: tuple[int, ...]) -> torch.Tensor:
+    def _cnn_feature_maps(self, image: torch.Tensor) -> torch.Tensor:
+        """Return pooled CNN maps shaped ``[N, C, H_p, W_p]``."""
         x = self._format_image(image)
         x = self.cnn(x)
-        x = self.avgpool(x)
+        return self.avgpool(x)
+
+    def _encode_cnn(self, image: torch.Tensor, leading_shape: tuple[int, ...]) -> torch.Tensor:
+        x = self._cnn_feature_maps(image)
         x = x.mean(dim=1).flatten(1)
         return x.reshape(*leading_shape, self.cnn_feature_dim)
 
@@ -119,6 +171,35 @@ class DepthCNNGRUEncoder(nn.Module):
         if update_hidden:
             self.hidden_state = next_hidden_state.detach()
         return out.squeeze(0)
+
+    def decode_depth(self, image: torch.Tensor) -> torch.Tensor:
+        """Predict clean depth in obs space ``[N, H*W]`` (Sigmoid × depth_obs_scale)."""
+        if self.depth_decoder is None:
+            raise RuntimeError("Depth decoder is disabled (enable_depth_aux=False).")
+        maps = self._cnn_feature_maps(image)
+        pred = self.depth_decoder(maps).flatten(1) * self.depth_obs_scale
+        return pred
+
+    def decode_height(self, image: torch.Tensor) -> torch.Tensor:
+        """Predict local height map in obs space ``[N, H_h*W_h]`` (Tanh × height_obs_scale)."""
+        if self.height_decoder is None:
+            raise RuntimeError("Height decoder is disabled (enable_depth_aux=False).")
+        maps = self._cnn_feature_maps(image)
+        return self.height_decoder(maps.flatten(1)) * self.height_obs_scale
+
+    def align_latents(
+        self,
+        depth_cnn_feat: torch.Tensor,
+        height_map: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project depth CNN maps and height maps into a shared unit sphere (MGDP-style)."""
+        if self.depth_align_proj is None or self.height_align_encoder is None:
+            raise RuntimeError("Alignment heads are disabled (enable_depth_aux=False).")
+        return self.depth_align_proj(depth_cnn_feat), self.height_align_encoder(height_map)
+
+    def cnn_align_features(self, image: torch.Tensor) -> torch.Tensor:
+        """Flattened pooled CNN maps used for contrastive alignment."""
+        return self._cnn_feature_maps(image).flatten(1)
 
 
 class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
@@ -153,6 +234,11 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         cnn_pooled_shape: tuple[int, int] = (15, 15),
         gru_hidden_dim: int = 225,
         gru_num_layers: int = 1,
+        enable_depth_aux: bool = False,
+        height_map_shape: tuple[int, int] = (17, 11),
+        depth_align_dim: int = 32,
+        clean_depth_obs_group: str = "clean_depth",
+        height_map_obs_group: str = "height_map",
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -178,6 +264,21 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         self.num_critic_obs = sum(obs[group].shape[-1] for group in self.critic_obs_groups_1d)
         self.num_single_obs = obs["single_obs"].shape[-1]
         self.image_shape = tuple(image_shape)
+        self.enable_depth_aux = bool(enable_depth_aux)
+        self.clean_depth_obs_group = clean_depth_obs_group
+        self.height_map_obs_group = height_map_obs_group
+        resolved_height_map_shape = tuple(height_map_shape)
+        if self.enable_depth_aux:
+            missing = [g for g in (clean_depth_obs_group, height_map_obs_group) if g not in obs.keys()]
+            if missing:
+                raise ValueError(
+                    "enable_depth_aux=True requires observation groups "
+                    f"{clean_depth_obs_group!r} and {height_map_obs_group!r} in the env TensorDict. "
+                    f"Missing: {missing}. Set Go2WD435iEnvCfg.use_mgdp_depth_aux=True."
+                )
+            height_dim = int(obs[height_map_obs_group].shape[-1])
+            if math.prod(resolved_height_map_shape) != height_dim:
+                resolved_height_map_shape = (1, height_dim)
 
         self.student_cnn_gru = DepthCNNGRUEncoder(
             image_shape=self.image_shape,
@@ -190,6 +291,11 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
             gru_hidden_dim=gru_hidden_dim,
             gru_num_layers=gru_num_layers,
             activation=activation,
+            enable_depth_aux=self.enable_depth_aux,
+            height_map_shape=resolved_height_map_shape,
+            align_dim=depth_align_dim,
+            depth_obs_scale=0.5,
+            height_obs_scale=2.5,
         )
 
         self.teacher_encoder = nn.Sequential(
@@ -362,6 +468,69 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
             latent, weights = self.student_moe_encoder(moe_input.reshape(-1, moe_input.shape[-1]))
             return latent.reshape(*leading_shape, latent.shape[-1]), weights.reshape(*leading_shape, weights.shape[-1])
         return self.student_moe_encoder(moe_input)
+
+    def compute_depth_aux_losses(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_state: torch.Tensor | None = None,
+        align_loss_type: str = "infonce",
+        align_temperature: float = 0.1,
+    ) -> dict[str, torch.Tensor]:
+        """Denoise / height-from-depth / depth↔height alignment losses (MGDP-inspired).
+
+        Notes vs official MGDP:
+        - Depth recon: noisy→clean (same idea); shallow CNN+Sigmoid (not full UNet+skips).
+        - Height term: depth→height prediction (lite), not MGDP's height autoencoder.
+        - Align: InfoNCE on CNN token ↔ height encoder (MGDP: height query, depth key).
+        """
+        del hidden_state  # align uses CNN maps; GRU remains for the policy path only
+        if not self.enable_depth_aux:
+            zero = torch.zeros((), device=obs[self.actor_image_obs_groups[0]].device)
+            return {"depth_denoise": zero, "height_recon": zero, "depth_align": zero}
+
+        image = self._image_obs(obs, self.actor_image_obs_groups)
+        clean = obs[self.clean_depth_obs_group]
+        height = obs[self.height_map_obs_group]
+
+        if masks is not None:
+            clean = unpad_trajectories(clean, masks)
+            height = unpad_trajectories(height, masks)
+            image_unpadded = unpad_trajectories(image, masks)
+        else:
+            image_unpadded = image
+
+        # Recurrent batches are [T, N, D] after unpad; CNN heads expect [T*N, D].
+        if image_unpadded.ndim >= 3:
+            image_unpadded = image_unpadded.reshape(-1, image_unpadded.shape[-1])
+            clean = clean.reshape(-1, clean.shape[-1])
+            height = height.reshape(-1, height.shape[-1])
+
+        depth_pred = self.student_cnn_gru.decode_depth(image_unpadded)
+        height_pred = self.student_cnn_gru.decode_height(image_unpadded)
+        cnn_feat = self.student_cnn_gru.cnn_align_features(image_unpadded)
+
+        denoise_loss = (depth_pred - clean).pow(2).mean()
+        height_loss = (height_pred - height).pow(2).mean()
+
+        depth_z, height_z = self.student_cnn_gru.align_latents(cnn_feat, height)
+        if align_loss_type == "mse":
+            # Train both towers (official MGDP does not detach either side).
+            align_loss = (depth_z - height_z).pow(2).mean()
+        else:
+            # MGDP: sim = height @ depth.T / T, CE(height→depth). Keep that one-way form.
+            if depth_z.shape[0] < 2:
+                align_loss = depth_z.new_zeros(())
+            else:
+                logits = height_z @ depth_z.transpose(0, 1) / max(align_temperature, 1e-6)
+                labels = torch.arange(logits.shape[0], device=logits.device)
+                align_loss = torch.nn.functional.cross_entropy(logits, labels)
+
+        return {
+            "depth_denoise": denoise_loss,
+            "height_recon": height_loss,
+            "depth_align": align_loss,
+        }
 
     def teacher_latent(
         self,

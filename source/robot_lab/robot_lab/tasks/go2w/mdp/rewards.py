@@ -58,6 +58,49 @@ def wheels_not_in_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: 
     return torch.sum(~is_contact, dim=1).float()
 
 
+def wheel_lateral_drag(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize lateral (body-y) slip at wheels in contact.
+
+    Compares each wheel's body-frame velocity to the rigid-body velocity at that
+    point (base linear + angular cross offset). Residual y slip indicates
+    sideways dragging / skidding on the ground. Only contacting wheels count.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    body_ids = asset_cfg.body_ids
+    num_wheels = len(body_ids)
+
+    root_quat = asset.data.root_quat_w.unsqueeze(1).expand(-1, num_wheels, -1).reshape(-1, 4)
+    wheel_vel_b = quat_apply_inverse(
+        root_quat, asset.data.body_lin_vel_w[:, body_ids, :].reshape(-1, 3)
+    ).reshape(env.num_envs, num_wheels, 3)
+
+    wheel_pos_w = asset.data.body_pos_w[:, body_ids, :] - asset.data.root_pos_w.unsqueeze(1)
+    wheel_pos_b = quat_apply_inverse(root_quat, wheel_pos_w.reshape(-1, 3)).reshape(
+        env.num_envs, num_wheels, 3
+    )
+
+    v_expected = asset.data.root_lin_vel_b.unsqueeze(1) + torch.cross(
+        asset.data.root_ang_vel_b.unsqueeze(1).expand(-1, num_wheels, -1),
+        wheel_pos_b,
+        dim=-1,
+    )
+    lateral_slip = wheel_vel_b[:, :, 1] - v_expected[:, :, 1]
+
+    contacts = (
+        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+        .norm(dim=-1)
+        .max(dim=1)[0]
+        > threshold
+    )
+    return torch.sum(torch.square(lateral_slip) * contacts.float(), dim=1)
+
+
 def base_tilt_angle(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Return the base tilt from the horizontal plane in radians."""
     asset: Articulation = env.scene[asset_cfg.name]
@@ -68,6 +111,7 @@ def base_tilt_angle(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEnt
 def local_terrain_tilt_angle(
     env: ManagerBasedRLEnv,
     contact_point_weight: float,
+    lateral_scale: float = 2.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     height_sensor_cfg: SceneEntityCfg = SceneEntityCfg("height_scanner_small"),
     contact_sensor_cfg: SceneEntityCfg = SceneEntityCfg("wheel_contact_points"),
@@ -78,6 +122,9 @@ def local_terrain_tilt_angle(
     contact positions. Each valid ray has unit weight and each valid contact
     has the fixed ``contact_point_weight``; airborne wheels contribute nothing.
     Invalid or degenerate fits fall back to the world-up normal.
+
+    Side-to-side (body-y / roll) tilt is scaled by ``lateral_scale`` relative to
+    front-to-back (body-x / pitch) before forming the tilt magnitude.
     """
     asset: Articulation = env.scene[asset_cfg.name]
     height_sensor: RayCaster = env.scene.sensors[height_sensor_cfg.name]
@@ -133,8 +180,13 @@ def local_terrain_tilt_angle(
     terrain_normal_w = torch.where(valid_fit.unsqueeze(1), terrain_normal_w, world_up)
 
     terrain_normal_b = quat_apply_inverse(asset.data.root_quat_w, terrain_normal_w)
+    # Body-x = pitch (fore-aft); body-y = roll (lateral). Scale roll heavier.
+    tilt_xy = torch.stack(
+        (terrain_normal_b[:, 0], lateral_scale * terrain_normal_b[:, 1]),
+        dim=1,
+    )
     return torch.atan2(
-        torch.linalg.vector_norm(terrain_normal_b[:, :2], dim=1),
+        torch.linalg.vector_norm(tilt_xy, dim=1),
         terrain_normal_b[:, 2],
     )
 

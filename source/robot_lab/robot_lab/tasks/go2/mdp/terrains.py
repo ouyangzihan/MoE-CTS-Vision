@@ -288,7 +288,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
     sub_terrains={
         "wave": with_slope_threshold(
             WaveTerrainCfg(
-                proportion=0.0,#0.1,
+                proportion=0.1,
             ),
             10.0,  # effectively disable slope correction for wave terrain
         ),
@@ -310,15 +310,15 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "rough_slope": with_slope_threshold(
             RoughSlopeTerrainCfg(
-                proportion=0.0,#0.05,
+                proportion=0.05,
             ),
             10.0,  # effectively disable slope correction for rough_slope terrain
         ),
         "stairs_up": with_slope_threshold(
             RandomWidthInvertedPyramidStairsTerrainCfg(
-                proportion=0.9,
+                proportion=0.65,
                 # Baked mesh range. go2w curriculum raises effective lower bound via min terrain level.
-                step_height_range=(0.0, 0.2),
+                step_height_range=(0., 0.2),
                 step_width_range=(0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -327,7 +327,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         "stairs_down": with_slope_threshold(
             RandomWidthPyramidStairsTerrainCfg(
                 proportion=0.05,
-                step_height_range=(0.0, 0.2),
+                step_height_range=(0., 0.2),
                 step_width_range=(0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -335,7 +335,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "obstacles": with_slope_threshold(
             terrain_gen.HfDiscreteObstaclesTerrainCfg(
-                proportion=0.0,#0.1,
+                proportion=0.1,
                 obstacle_width_range=(1.0, 2.0),
                 obstacle_height_range=(0.05, 0.275),
                 num_obstacles=20,

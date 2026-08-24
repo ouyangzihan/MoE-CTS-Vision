@@ -48,6 +48,11 @@ class MoECTS:
         teacher_env_ratio: float = 0.75,
         normalize_advantage_per_mini_batch: bool = False,
         device: str = "cpu",
+        depth_denoise_coef: float = 0.0,
+        height_recon_coef: float = 0.0,
+        depth_align_coef: float = 0.0,
+        depth_align_loss_type: str = "infonce",
+        depth_align_temperature: float = 0.1,
         symmetry: Go2MoECTSSymmetry | None = None,
         # RND parameters
         rnd_cfg: dict | None = None,
@@ -127,6 +132,11 @@ class MoECTS:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.depth_denoise_coef = float(depth_denoise_coef)
+        self.height_recon_coef = float(height_recon_coef)
+        self.depth_align_coef = float(depth_align_coef)
+        self.depth_align_loss_type = str(depth_align_loss_type)
+        self.depth_align_temperature = float(depth_align_temperature)
         
         # Teacher-student environment split.
         # Single-env play/eval uses the student (deployed) policy only: forcing a teacher
@@ -570,6 +580,9 @@ class MoECTS:
         mean_entropy = 0
         mean_latent_loss = 0
         mean_load_balance_loss = 0
+        mean_depth_denoise_loss = 0
+        mean_height_recon_loss = 0
+        mean_depth_align_loss = 0
         moe_gate_prob_sum = None
         moe_top1_count_sum = None
         moe_gate_entropy_sum = 0.0
@@ -789,6 +802,32 @@ class MoECTS:
             load_balance_loss = torch.mean((mean_usage - target_usage).pow(2))
             student_loss = latent_loss + self.load_balance_coef * load_balance_loss
 
+            depth_denoise_loss = latent_loss.new_zeros(())
+            height_recon_loss = latent_loss.new_zeros(())
+            depth_align_loss = latent_loss.new_zeros(())
+            aux_enabled = (
+                self.depth_denoise_coef > 0.0
+                or self.height_recon_coef > 0.0
+                or self.depth_align_coef > 0.0
+            ) and hasattr(self.policy, "compute_depth_aux_losses")
+            if aux_enabled and getattr(self.policy, "enable_depth_aux", False):
+                aux = self.policy.compute_depth_aux_losses(
+                    student_obs,
+                    masks=student_masks,
+                    hidden_state=self._slice_hidden_state(student_hidden_state, teacher_trajectories, None),
+                    align_loss_type=self.depth_align_loss_type,
+                    align_temperature=self.depth_align_temperature,
+                )
+                depth_denoise_loss = aux["depth_denoise"]
+                height_recon_loss = aux["height_recon"]
+                depth_align_loss = aux["depth_align"]
+                student_loss = (
+                    student_loss
+                    + self.depth_denoise_coef * depth_denoise_loss
+                    + self.height_recon_coef * height_recon_loss
+                    + self.depth_align_coef * depth_align_loss
+                )
+
             self.optimizer_stu_enc.zero_grad()
             student_loss.backward()
             with torch.no_grad():
@@ -803,12 +842,18 @@ class MoECTS:
 
             mean_latent_loss += latent_loss.item()
             mean_load_balance_loss += load_balance_loss.item()
+            mean_depth_denoise_loss += float(depth_denoise_loss.detach().item())
+            mean_height_recon_loss += float(height_recon_loss.detach().item())
+            mean_depth_align_loss += float(depth_align_loss.detach().item())
 
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
         mean_latent_loss /= num_updates
         mean_load_balance_loss /= num_updates
+        mean_depth_denoise_loss /= num_updates
+        mean_height_recon_loss /= num_updates
+        mean_depth_align_loss /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
 
@@ -820,6 +865,9 @@ class MoECTS:
             "entropy": mean_entropy,
             "mean_latent_loss": mean_latent_loss,
             "mean_load_balance_loss": mean_load_balance_loss,
+            "mean_depth_denoise_loss": mean_depth_denoise_loss,
+            "mean_height_recon_loss": mean_height_recon_loss,
+            "mean_depth_align_loss": mean_depth_align_loss,
         }
         if moe_sample_count > 0 and moe_gate_prob_sum is not None and moe_top1_count_sum is not None:
             mean_gate_probs = moe_gate_prob_sum / moe_sample_count

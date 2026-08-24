@@ -350,3 +350,88 @@ def terrain_levels_vel_gym(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> di
             extras[terrain_name] = torch.mean(levels[mask]) if mask.any() else levels.new_zeros(())
 
     return extras
+
+
+def resume_iteration_curriculum(
+    env: ManagerBasedRLEnv,
+    learning_iteration: int,
+    num_steps_per_iter: int = 24,
+    skip_terms: Sequence[str] = ("terrain_levels",),
+) -> int:
+    """Restore iteration-based curriculum as if training had reached ``learning_iteration``.
+
+    Sets ``env.common_step_counter`` so later updates stay on the same schedule, then
+    applies reward-weight, depth-noise, and step-height terms immediately. Terrain-level
+    curriculum is skipped because it is performance-based. Command-range expansion is
+    applied when the active command term supports it.
+    """
+    steps = max(int(num_steps_per_iter), 1)
+    env.common_step_counter = int(learning_iteration) * steps
+    env_ids = torch.arange(env.num_envs, device=env.device)
+    skip = set(skip_terms)
+    curriculum_manager = getattr(env, "curriculum_manager", None)
+    if curriculum_manager is not None:
+        for name, term_cfg in zip(curriculum_manager._term_names, curriculum_manager._term_cfgs):
+            if name in skip:
+                continue
+            state = term_cfg.func(env, env_ids, **term_cfg.params)
+            curriculum_manager._curriculum_state[name] = state
+    try:
+        command_term = env.command_manager.get_term("base_velocity")
+    except Exception:
+        command_term = None
+    if command_term is not None and hasattr(command_term, "_update_command_range_curriculum"):
+        command_term._update_command_range_curriculum()
+    return env.common_step_counter
+
+
+def _lerp(start: float, end: float, alpha: float) -> float:
+    return start + (end - start) * float(np.clip(alpha, 0.0, 1.0))
+
+
+def depth_noise_curriculum(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    start_it: int = 0,
+    end_it: int = 5000,
+    num_steps_per_iter: int = 24,
+    noise_std_range: tuple[float, float] = (0.02, 0.06),
+    dropout_prob_range: tuple[float, float] = (0.2, 0.2),
+    depth_dependent_noise_scale_range: tuple[float, float] = (0.0, 1.0),
+    edge_speckle_prob_range: tuple[float, float] = (0.0, 0.08),
+    temporal_flicker_std_range: tuple[float, float] = (0.0, 0.03),
+    hole_blob_prob_range: tuple[float, float] = (0.0, 0.15),
+) -> dict[str, float]:
+    """Ramp depth-image corruption severity for MGDP-style outdoor robustness.
+
+    Writes the scheduled values onto ``env.cfg`` fields consumed by
+    ``process_depth_image(..., use_cfg_noise_overrides=True)``.
+    """
+    del env_ids  # curriculum applies globally
+    current_it = env.common_step_counter // max(int(num_steps_per_iter), 1)
+    if current_it <= start_it:
+        alpha = 0.0
+    elif current_it >= end_it:
+        alpha = 1.0
+    else:
+        alpha = (current_it - start_it) / max(end_it - start_it, 1)
+
+    env.cfg.depth_noise_std = _lerp(noise_std_range[0], noise_std_range[1], alpha)
+    env.cfg.depth_dropout_prob = _lerp(dropout_prob_range[0], dropout_prob_range[1], alpha)
+    env.cfg.depth_dependent_noise_scale = _lerp(
+        depth_dependent_noise_scale_range[0], depth_dependent_noise_scale_range[1], alpha
+    )
+    env.cfg.depth_edge_speckle_prob = _lerp(edge_speckle_prob_range[0], edge_speckle_prob_range[1], alpha)
+    env.cfg.depth_temporal_flicker_std = _lerp(
+        temporal_flicker_std_range[0], temporal_flicker_std_range[1], alpha
+    )
+    env.cfg.depth_hole_blob_prob = _lerp(hole_blob_prob_range[0], hole_blob_prob_range[1], alpha)
+
+    return {
+        "noise_std": env.cfg.depth_noise_std,
+        "dropout_prob": env.cfg.depth_dropout_prob,
+        "depth_dependent_noise_scale": env.cfg.depth_dependent_noise_scale,
+        "edge_speckle_prob": env.cfg.depth_edge_speckle_prob,
+        "temporal_flicker_std": env.cfg.depth_temporal_flicker_std,
+        "hole_blob_prob": env.cfg.depth_hole_blob_prob,
+    }
