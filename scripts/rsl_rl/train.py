@@ -46,6 +46,12 @@ parser.add_argument(
     default=False,
     help="Use the previous Go2RLGym random velocity command instead of flat-patch PoseVelocityCommand.",
 )
+parser.add_argument(
+    "--redo",
+    action="store_true",
+    default=False,
+    help="Enable Recycling Dormant Neurons (ReDo) during MoE-CTS training.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -132,7 +138,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Sync MGDP-style depth aux training from env master switch → policy/algorithm.
     # When False (default), the current D435i MoE-CTS pipeline is unchanged.
+    # Re-apply obs-group side effects: Hydra from_dict sets the flag after __post_init__.
     if hasattr(env_cfg, "use_mgdp_depth_aux"):
+        if hasattr(env_cfg, "apply_mgdp_depth_aux_settings"):
+            env_cfg.apply_mgdp_depth_aux_settings()
         enabled = bool(env_cfg.use_mgdp_depth_aux)
         if hasattr(agent_cfg, "policy") and hasattr(agent_cfg.policy, "enable_depth_aux"):
             agent_cfg.policy.enable_depth_aux = enabled
@@ -166,6 +175,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
+    if getattr(args_cli, "redo", False) and hasattr(agent_cfg, "algorithm") and hasattr(agent_cfg.algorithm, "redo_cfg"):
+        agent_cfg.algorithm.redo_cfg.enabled = True
+        grad_steps_per_iter = (
+            2 * agent_cfg.algorithm.num_learning_epochs * agent_cfg.algorithm.num_mini_batches
+        )
+        agent_cfg.algorithm.redo_cfg.reset_end_step = agent_cfg.max_iterations * grad_steps_per_iter
+        print(
+            "[INFO] ReDo enabled "
+            f"(reset_period={agent_cfg.algorithm.redo_cfg.reset_period}, "
+            f"reset_end_step={agent_cfg.algorithm.redo_cfg.reset_end_step}, "
+            f"recycle_rate={agent_cfg.algorithm.redo_cfg.recycle_rate})"
+        )
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here

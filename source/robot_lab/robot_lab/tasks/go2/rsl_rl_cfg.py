@@ -73,6 +73,34 @@ class RslRlMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsActorCriticCfg):
 
 
 @configclass
+class RslRlRedoCfg:
+    """Recycling Dormant Neurons (ReDo) hyperparameters."""
+
+    enabled = False
+    reset_period = 100_000  # 200_000 # gradient steps between recycle events
+    reset_start_step = 0
+    reset_end_step = 2_500_000
+    logging_period = 10_000 # 20_000
+    recycle_rate = 0.3
+    score_type = "redo"  # redo | random | redo_inverted | threshold
+    dead_neurons_threshold = 0.0
+    init_method_outgoing = "zero"  # zero | random
+    weight_scaling = False
+    incoming_scale = 1.0
+    outgoing_scale = 1.0
+    sub_mean_score = False
+    batch_size_statistics = 256
+    module_names = (
+        "actor",
+        "critic",
+        "teacher_encoder",
+        "student_moe_encoder",
+        "student_cnn_gru",
+    )
+    reset_start_layer_idx = 0
+
+
+@configclass
 class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     class_name = "MoECTS"
     value_loss_coef = 1.0
@@ -99,6 +127,7 @@ class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     depth_align_coef = 0.0
     depth_align_loss_type = "infonce"  # MGDP default; also supports "mse"
     depth_align_temperature = 0.1
+    redo_cfg = RslRlRedoCfg()
 
 @configclass
 class MoECTSRunnerCfg(RslRlOnPolicyRunnerCfg):

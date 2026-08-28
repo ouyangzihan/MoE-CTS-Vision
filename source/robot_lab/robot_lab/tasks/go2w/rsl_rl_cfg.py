@@ -39,6 +39,22 @@ class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
         self.algorithm.height_recon_coef = 0.0
         self.algorithm.depth_align_coef = 0.0
         self.algorithm.depth_align_loss_type = "infonce"
+        # ReDo defaults for D435i MoE-CTS (disabled unless --redo or enabled in cfg).
+        grad_steps_per_iter = (
+            2 * self.algorithm.num_learning_epochs * self.algorithm.num_mini_batches
+        )
+        self.algorithm.redo_cfg.reset_end_step = self.max_iterations * grad_steps_per_iter
+
+
+@configclass
+class Go2WMoECTSD435iRedoRunnerCfg(Go2WMoECTSD435iRunnerCfg):
+    """Go2W D435i MoE-CTS with ReDo enabled."""
+
+    experiment_name = "go2w_moe_cts_d435i_redo"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.redo_cfg.enabled = True
 
 
 @configclass

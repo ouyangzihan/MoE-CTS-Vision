@@ -15,6 +15,7 @@ import itertools
 from rsl_rl.modules import ActorCriticMoECTS
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorageCTS
+from rsl_rl.utils.redo import RedoConfig, RedoManager, sample_observations_for_redo
 from robot_lab.tasks.go2.mdp.symmetry import Go2MoECTSSymmetry
 
 
@@ -54,6 +55,7 @@ class MoECTS:
         depth_align_loss_type: str = "infonce",
         depth_align_temperature: float = 0.1,
         symmetry: Go2MoECTSSymmetry | None = None,
+        redo_cfg: dict | None = None,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Distributed training parameters
@@ -165,6 +167,16 @@ class MoECTS:
             self.student_num_envs = len(self.student_env_idxs)
         assert len(self.teacher_env_idxs) == self.teacher_num_envs, f"{len(self.teacher_env_idxs)=} != {self.teacher_num_envs=}"
         assert len(self.student_env_idxs) == self.student_num_envs, f"{len(self.student_env_idxs)=} != {self.student_num_envs=}"
+
+        redo_config = RedoConfig.from_dict(redo_cfg)
+        self.redo_manager: RedoManager | None = None
+        if redo_config.enabled:
+            self.redo_manager = RedoManager(
+                policy=self.policy,
+                optimizers=[self.optimizer, self.optimizer_stu_enc],
+                cfg=redo_config,
+                device=self.device,
+            )
         
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -289,9 +301,9 @@ class MoECTS:
         if not self.normalize_advantage_per_mini_batch:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
-    def update(self) -> dict[str, float]:
+    def update(self, learning_iteration: int | None = None) -> dict[str, float]:
         if self.policy.is_recurrent:
-            return self._update_recurrent()
+            return self._update_recurrent(learning_iteration=learning_iteration)
 
         mean_value_loss = 0
         mean_surrogate_loss = 0
@@ -450,6 +462,8 @@ class MoECTS:
             params_to_clip = itertools.chain.from_iterable(g['params'] for g in self.optimizer.param_groups)
             nn.utils.clip_grad_norm_(params_to_clip, self.max_grad_norm)
             self.optimizer.step()
+            if self.redo_manager is not None:
+                self.redo_manager.increment_gradient_steps()
             # Apply the gradients for RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()
@@ -514,6 +528,8 @@ class MoECTS:
                     moe_grad_step_count += 1
             nn.utils.clip_grad_norm_(self.student_encoder_params, self.max_grad_norm)
             self.optimizer_stu_enc.step()
+            if self.redo_manager is not None:
+                self.redo_manager.increment_gradient_steps()
 
             mean_latent_loss += latent_loss.item()
             mean_load_balance_loss += load_balance_loss.item()
@@ -526,9 +542,6 @@ class MoECTS:
         mean_load_balance_loss /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
-
-        # Clear the storage
-        self.storage.clear()
 
         # Construct the loss dictionary
         loss_dict = {
@@ -560,7 +573,22 @@ class MoECTS:
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
 
+        loss_dict.update(self._maybe_apply_redo(learning_iteration))
+
         return loss_dict
+
+    def _maybe_apply_redo(self, learning_iteration: int | None) -> dict[str, float]:
+        if self.redo_manager is None:
+            self.storage.clear()
+            return {}
+        obs_statistics = sample_observations_for_redo(
+            self.storage.observations,
+            self.redo_manager.cfg.batch_size_statistics,
+            self.device,
+        )
+        redo_logs = self.redo_manager.maybe_step(obs_statistics, learning_iteration=learning_iteration)
+        self.storage.clear()
+        return redo_logs
 
     @staticmethod
     def _flatten_time_env(value: torch.Tensor) -> torch.Tensor:
@@ -574,7 +602,7 @@ class MoECTS:
             return tuple(MoECTS._slice_hidden_state(state, start, end) for state in hidden_state)
         return hidden_state[:, start:end]
 
-    def _update_recurrent(self) -> dict[str, float]:
+    def _update_recurrent(self, learning_iteration: int | None = None) -> dict[str, float]:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
@@ -746,6 +774,8 @@ class MoECTS:
             params_to_clip = itertools.chain.from_iterable(g["params"] for g in self.optimizer.param_groups)
             nn.utils.clip_grad_norm_(params_to_clip, self.max_grad_norm)
             self.optimizer.step()
+            if self.redo_manager is not None:
+                self.redo_manager.increment_gradient_steps()
 
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
@@ -839,6 +869,8 @@ class MoECTS:
                     moe_grad_step_count += 1
             nn.utils.clip_grad_norm_(self.student_encoder_params, self.max_grad_norm)
             self.optimizer_stu_enc.step()
+            if self.redo_manager is not None:
+                self.redo_manager.increment_gradient_steps()
 
             mean_latent_loss += latent_loss.item()
             mean_load_balance_loss += load_balance_loss.item()
@@ -856,8 +888,6 @@ class MoECTS:
         mean_depth_align_loss /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
-
-        self.storage.clear()
 
         loss_dict = {
             "value": mean_value_loss,
@@ -890,6 +920,7 @@ class MoECTS:
                 loss_dict[f"moe/grad_norm_expert_{i}"] = float(mean_expert_grad_norm[i].item())
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
+        loss_dict.update(self._maybe_apply_redo(learning_iteration))
         return loss_dict
 
     def _compute_expert_grad_norms(self) -> torch.Tensor | None:

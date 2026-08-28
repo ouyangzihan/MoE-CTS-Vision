@@ -40,7 +40,7 @@ ALL_JOINT_NAMES = LEG_JOINT_NAMES + WHEEL_JOINT_NAMES
 
 BASE_LINK_NAME = "base"
 FOOT_LINK_NAME = ".*_foot"
-BASE_HEIGHT_TARGET = 0.38
+BASE_HEIGHT_TARGET = 0.408
 
 # --- Camera ---
 D435I_DEPTH_WIDTH = 60
@@ -231,7 +231,7 @@ class CommandsCfg:
         only_positive_lin_vel_x=True,
         # 10% stand, 20% reverse-into-target (neg vx + heading+π), 70% forward.
         rel_standing_envs=0.1,
-        rel_reverse_envs=0.3,
+        rel_reverse_envs=0.45,
         reverse_lin_vel_x_abs_max=1.0,  # reverse clamp [-1, 0]; yaw unchanged
         # ranges=mdp.PoseVelocityCommandCfg.Ranges(
         #     lin_vel_x=(0.0, 0.5),
@@ -506,11 +506,12 @@ class D435iObservationsCfg(ObservationsCfg):
                 "enable_noise": True,
                 "noise_std": 0.02,
                 "dropout_prob": 0.2,
-                # MGDP-style extras (active only when use_cfg_noise_overrides=True).
-                "depth_dependent_noise_scale": 0.0,
-                "edge_speckle_prob": 0.0,
-                "temporal_flicker_std": 0.0,
-                "hole_blob_prob": 0.0,
+                # Extra depth artifacts for implicit robustness (used whenever enable_noise).
+                # Curriculum/runtime overrides still require use_cfg_noise_overrides=True.
+                "depth_dependent_noise_scale": 0.5,
+                "edge_speckle_prob": 0.04,
+                "temporal_flicker_std": 0.015,
+                "hole_blob_prob": 0.075,
                 "hole_blob_size_range": (3, 12),
                 "use_cfg_noise_overrides": False,
                 # None → far (legacy). MGDP aux mode sets 0.0 (holes as near/invalid).
@@ -613,8 +614,8 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "stiffness_distribution_params": (0.9, 1.1),
-            "damping_distribution_params": (0.9, 1.1),
+            "stiffness_distribution_params": (0.8, 1.25),
+            "damping_distribution_params": (0.8, 1.25),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -624,7 +625,7 @@ class EventCfg:
         mode="reset",
         params={
             "action_term_name": "joint_pos",
-            "offset_range": (-0.035, 0.035),
+            "offset_range": (-0.1, 0.1),
         },
     )
     randomize_push_robot = EventTerm(
@@ -646,8 +647,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.0, 2.0),
-            "dynamic_friction_range": (0.0, 2.0),
+            "static_friction_range": (0.2, 1.5),
+            "dynamic_friction_range": (0.2, 1.5),
             "restitution_range": (0.0, 0.5),
             "num_buckets": 64,
             "make_consistent": True,
@@ -731,7 +732,13 @@ class RewardsCfg:
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-5.0, #-1.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_thigh|.*_calf"), "threshold": 5.0},
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=".*_hip|.*_thigh|.*calf|Head_.*|.*_foot_motor|camera_base",
+            ),
+            "threshold": 5.0,
+        },
     )
     wheels_not_in_contact = RewTerm(
         func=mdp.wheels_not_in_contact,
@@ -746,6 +753,19 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             "threshold": 1.0,
+        },
+    )
+    wheel_slip_ratio = RewTerm(
+        func=mdp.wheel_slip_ratio,
+        weight=-0.03,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME, preserve_order=True),
+            "threshold": 1.0,
+            "wheel_radius": 0.086,
+            "contact_offset_body": (0.0, 0.0, -0.086),
+            "terrain_static_friction": 1.0,
+            "terrain_dynamic_friction": 1.0,
         },
     )
     joint_pos_limits = RewTerm(
@@ -840,8 +860,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "track_lin_vel_xy_exp",
-            "initial_weight": 4.0,
-            "final_weight": 4.0,
+            "initial_weight": 6.0,
+            "final_weight": 6.0,
             "start_it": 0,
             "end_it": 1000,
         },
@@ -850,8 +870,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "track_ang_vel_z_exp",
-            "initial_weight": 2.0,
-            "final_weight": 2.0,
+            "initial_weight": 3.0,
+            "final_weight": 3.0,
             "start_it": 0,
             "end_it": 1000,
         },
@@ -881,7 +901,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.4, #-0.25
+            "final_weight": -0.2, #-0.25
             "start_it": 5000,
             "end_it": 20000,
         },
@@ -900,8 +920,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "local_terrain_tilt_angle",
-            "initial_weight": -0.2,
-            "final_weight": -0.4,
+            "initial_weight": -0.3,
+            "final_weight": -0.6,
             "start_it": 5000,
             "end_it": 10000,
         },
@@ -922,7 +942,7 @@ class CurriculumCfg:
     )
     base_height_l2 = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "base_height_l2", "initial_weight": -1.0, "final_weight": -20.0, "start_it": 0, "end_it": 10000},
+        params={"term_name": "base_height_l2", "initial_weight": -2.0, "final_weight": -40.0, "start_it": 0, "end_it": 10000},
     )
 
 
@@ -1018,11 +1038,11 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
 class Go2WD435iEnvCfg(Go2WEnvCfg):
     """Go2W environment variant with the D435i front depth camera enabled."""
 
-    scene: Go2WD435iSceneCfg = Go2WD435iSceneCfg(num_envs=512, env_spacing=0.5)
+    scene: Go2WD435iSceneCfg = Go2WD435iSceneCfg(num_envs=1024, env_spacing=0.5)
     observations: D435iObservationsCfg = D435iObservationsCfg()
     # Master switch for MGDP-style depth aux training (denoise / height recon /
     # geometry alignment / harsher noise curriculum). False = current pipeline.
-    use_mgdp_depth_aux: bool = True
+    use_mgdp_depth_aux: bool = False
     # Runtime noise overrides written by depth_noise_curriculum when aux is on.
     depth_noise_std: float = 0.02
     depth_dropout_prob: float = 0.2
@@ -1034,11 +1054,12 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
     # Official MGDP dropout zeros holes; None keeps legacy far-fill when aux is off.
     depth_dropout_fill_value: float | None = None
 
-    def __post_init__(self):
-        super().__post_init__()
-        if self.scene.front_depth_camera is not None:
-            self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
+    def apply_mgdp_depth_aux_settings(self) -> None:
+        """Apply/re-apply MGDP aux obs groups from ``use_mgdp_depth_aux``.
 
+        Hydra ``from_dict`` updates the flag after ``__post_init__`` without
+        re-running it, so play/train scripts must call this after overrides.
+        """
         depth_term = self.observations.depth.depth_image
         if self.use_mgdp_depth_aux:
             self.observations.clean_depth = D435iObservationsCfg.CleanDepthCfg()
@@ -1070,18 +1091,20 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
                 },
             )
         else:
+            # Keep ObsTerm noise params as authored (including MGDP-style extras).
+            # Only disable aux heads / curriculum / runtime cfg overrides.
             self.observations.clean_depth = None
             self.observations.height_map = None
             depth_term.params["use_cfg_noise_overrides"] = False
-            depth_term.params["noise_std"] = 0.02
-            depth_term.params["dropout_prob"] = 0.2
-            depth_term.params["depth_dependent_noise_scale"] = 0.0
-            depth_term.params["edge_speckle_prob"] = 0.0
-            depth_term.params["temporal_flicker_std"] = 0.0
-            depth_term.params["hole_blob_prob"] = 0.0
             depth_term.params["dropout_fill_value"] = None
             if getattr(self.curriculum, "depth_noise", None) is not None:
                 self.curriculum.depth_noise = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.scene.front_depth_camera is not None:
+            self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
+        self.apply_mgdp_depth_aux_settings()
 
 
 @configclass

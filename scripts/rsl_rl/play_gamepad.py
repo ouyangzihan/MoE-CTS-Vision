@@ -490,7 +490,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print("[INFO] PoseVelocityCommand target flat-patch visualization enabled.")
 
     # Keep policy depth-aux heads in sync with the env master switch (needed to load aux-trained ckpts).
+    # Re-apply obs-group side effects: Hydra from_dict sets the flag after __post_init__.
     if hasattr(env_cfg, "use_mgdp_depth_aux"):
+        if hasattr(env_cfg, "apply_mgdp_depth_aux_settings"):
+            env_cfg.apply_mgdp_depth_aux_settings()
         enabled = bool(env_cfg.use_mgdp_depth_aux)
         if hasattr(agent_cfg, "policy") and hasattr(agent_cfg.policy, "enable_depth_aux"):
             agent_cfg.policy.enable_depth_aux = enabled
@@ -499,6 +502,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 agent_cfg.algorithm.depth_denoise_coef = 0.0
                 agent_cfg.algorithm.height_recon_coef = 0.0
                 agent_cfg.algorithm.depth_align_coef = 0.0
+        print(f"[INFO] use_mgdp_depth_aux={enabled} (enable_depth_aux synced for checkpoint load)")
 
     env_cfg.scene.num_envs = 1
     # PhysX GPU memory reservation is large by default for high-throughput training.

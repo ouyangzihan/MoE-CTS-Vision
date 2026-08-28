@@ -13,7 +13,7 @@ import torch
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.sensors import ContactSensor, RayCaster
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -99,6 +99,113 @@ def wheel_lateral_drag(
         > threshold
     )
     return torch.sum(torch.square(lateral_slip) * contacts.float(), dim=1)
+
+
+class wheel_slip_ratio(ManagerTermBase):
+    """Penalize tangential slip at contacting wheels, weighted by effective friction.
+
+    For each wheel in contact, compares the contact-patch velocity (in the plane
+    perpendicular to the wheel axle) to zero slip against a static surface. The
+    per-wheel penalty is ``w * slip^2`` where ``w = (mu_s + mu_d) / 2`` uses
+    average-combined wheel and terrain material coefficients.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.asset_cfg: SceneEntityCfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        self.sensor_cfg: SceneEntityCfg = cfg.params.get(
+            "sensor_cfg", SceneEntityCfg("contact_forces", body_names=".*_foot")
+        )
+        contact_offset_body = cfg.params.get("contact_offset_body", (0.0, 0.0, -0.086))
+        self._contact_offset_b = torch.tensor(contact_offset_body, device=env.device, dtype=torch.float32)
+        self._wheel_axis_b = torch.tensor([0.0, 1.0, 0.0], device=env.device, dtype=torch.float32)
+        self.terrain_static_friction = float(cfg.params.get("terrain_static_friction", 1.0))
+        self.terrain_dynamic_friction = float(cfg.params.get("terrain_dynamic_friction", 1.0))
+
+        asset: Articulation = env.scene[self.asset_cfg.name]
+        self._asset = asset
+        self._num_shapes_per_body = self._compute_num_shapes_per_body(asset)
+        self._wheel_shape_ids = self._shape_ids_for_bodies(asset, self.asset_cfg.body_ids)
+        self._wheel_friction_w: torch.Tensor | None = None
+
+    @staticmethod
+    def _compute_num_shapes_per_body(asset: Articulation) -> list[int]:
+        num_shapes_per_body = []
+        for link_path in asset.root_physx_view.link_paths[0]:
+            link_physx_view = asset._physics_sim_view.create_rigid_body_view(link_path)  # type: ignore[attr-defined]
+            num_shapes_per_body.append(link_physx_view.max_shapes)
+        return num_shapes_per_body
+
+    def _shape_ids_for_bodies(self, asset: Articulation, body_ids: list[int] | slice) -> list[list[int]]:
+        if isinstance(body_ids, slice):
+            body_ids = list(range(asset.num_bodies))
+        shape_ids_per_body = []
+        for body_id in body_ids:
+            start_idx = sum(self._num_shapes_per_body[:body_id])
+            end_idx = start_idx + self._num_shapes_per_body[body_id]
+            shape_ids_per_body.append(list(range(start_idx, end_idx)))
+        return shape_ids_per_body
+
+    def _ensure_friction_weights(self) -> torch.Tensor:
+        if self._wheel_friction_w is not None:
+            return self._wheel_friction_w
+
+        materials = self._asset.root_physx_view.get_material_properties().to(self.device)
+        friction_weights = []
+        for shape_ids in self._wheel_shape_ids:
+            wheel_materials = materials[:, shape_ids, :]
+            mu_s_robot = wheel_materials[..., 0].mean(dim=-1)
+            mu_d_robot = wheel_materials[..., 1].mean(dim=-1)
+            mu_s_contact = 0.5 * (mu_s_robot + self.terrain_static_friction)
+            mu_d_contact = 0.5 * (mu_d_robot + self.terrain_dynamic_friction)
+            friction_weights.append(0.5 * (mu_s_contact + mu_d_contact))
+        self._wheel_friction_w = torch.stack(friction_weights, dim=1)
+        return self._wheel_friction_w
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        threshold: float,
+        sensor_cfg: SceneEntityCfg,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        wheel_radius: float = 0.086,
+        contact_offset_body: tuple[float, float, float] = (0.0, 0.0, -0.086),
+        terrain_static_friction: float = 1.0,
+        terrain_dynamic_friction: float = 1.0,
+    ) -> torch.Tensor:
+        del wheel_radius, contact_offset_body, terrain_static_friction, terrain_dynamic_friction
+        asset: Articulation = env.scene[asset_cfg.name]
+        contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+        body_ids = asset_cfg.body_ids
+        num_wheels = len(body_ids)
+
+        contacts = (
+            contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+            .norm(dim=-1)
+            .max(dim=1)[0]
+            > threshold
+        )
+
+        body_quat = asset.data.body_quat_w[:, body_ids, :]
+        axis_w = quat_apply(
+            body_quat.reshape(-1, 4),
+            self._wheel_axis_b.unsqueeze(0).expand(env.num_envs * num_wheels, 3),
+        ).reshape(env.num_envs, num_wheels, 3)
+
+        contact_offset_b = self._contact_offset_b.view(1, 1, 3).expand(env.num_envs, num_wheels, 3)
+        contact_offset_w = quat_apply(body_quat.reshape(-1, 4), contact_offset_b.reshape(-1, 3)).reshape(
+            env.num_envs, num_wheels, 3
+        )
+
+        v_lin = asset.data.body_lin_vel_w[:, body_ids, :]
+        v_ang = asset.data.body_ang_vel_w[:, body_ids, :]
+        v_contact = v_lin + torch.cross(v_ang, contact_offset_w, dim=-1)
+        v_axial = (v_contact * axis_w).sum(dim=-1, keepdim=True) * axis_w
+        v_slip = v_contact - v_axial
+        slip_sq = torch.sum(torch.square(v_slip), dim=-1)
+
+        friction_w = self._ensure_friction_weights()
+        return torch.sum(slip_sq * friction_w * contacts.float(), dim=1)
 
 
 def base_tilt_angle(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

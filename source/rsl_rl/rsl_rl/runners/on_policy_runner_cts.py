@@ -135,7 +135,7 @@ class OnPolicyRunnerCTS:
                 self.alg.compute_returns(obs)
 
             # Update policy
-            loss_dict = self.alg.update()
+            loss_dict = self.alg.update(learning_iteration=it)
 
             stop = time.time()
             learn_time = stop - start
