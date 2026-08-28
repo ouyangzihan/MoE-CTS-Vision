@@ -48,39 +48,16 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
-# logs
-logs/
-**/logs/
-
-# build
-build/
-**/build/
-
-# binaries
-*.o
-*.so
-*.a
-
-# cache
-__pycache__/
-*.pyc
-
-# editor
-.vscode/
-.idea/
-.DS_Store
-
-# ML checkpoints / datasets
-*.pth
-*.npz
-*.npy
-
-# Large ML artifacts (do not commit)
-*.pth
-*.ckpt
+# Local-only dirs (keep on disk, do not commit/push)
+deploy/
+Reference/
 
 # logs
 logs/
 **/logs/
 outputs/
 .omx/
+
+# Large ML artifacts (do not commit)
+*.pth
+*.ckpt

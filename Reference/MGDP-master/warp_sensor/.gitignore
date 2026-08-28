@@ -1,8 +1,0 @@
-__pycache__
-.vscode
-
-*.egg-info
-__pycache__
-build
-dist
-.idea
