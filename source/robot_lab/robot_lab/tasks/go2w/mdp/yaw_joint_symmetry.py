@@ -83,7 +83,7 @@ def maybe_mirror_joints(
 def generated_commands_abs_yaw(env: ManagerBasedEnv, command_name: str = "base_velocity") -> torch.Tensor:
     """Velocity command observation with absolute yaw when symmetry is enabled.
 
-    Command layout is ``(vx, yaw)`` for PoseVelocity (no lateral ``vy``).
+    Command layout is ``(vx, vy, yaw)`` for Go2RLGym or ``(vx, yaw)`` for PoseVelocity.
     """
     command = env.command_manager.get_command(command_name).clone()
     if _enabled(env):

@@ -79,6 +79,7 @@ class Go2RLGymCommand(CommandTerm):
         self.robot: Articulation = env.scene[cfg.asset_name]
         self.zero_command_prob = 0
         self.max_command_x = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.time_since_resample = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         self.cfg.command_range_curriculum = sorted(self.cfg.command_range_curriculum, key=lambda x: x['iter'], reverse=True)
 
@@ -119,6 +120,7 @@ class Go2RLGymCommand(CommandTerm):
         self.commands_xy_accumulation[env_ids] = 0.0
         self.max_move_distance[env_ids] = 0.0
         self.last_is_limit_vel[env_ids] = False
+        self.time_since_resample[env_ids] = 0.0
         return super().reset(env_ids)
         
     def _resample(self, env_ids: Sequence[int]):
@@ -253,10 +255,12 @@ class Go2RLGymCommand(CommandTerm):
             min_prob += self.zero_command_prob
 
         self.commands_xy_accumulation[env_ids] += self.commands[env_ids, :2]
+        self.time_since_resample[env_ids] = 0.0
 
     def _update_command(self):
         current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self._env.scene.env_origins[:, :2], dim=1)
         self.max_move_distance = torch.max(self.max_move_distance, current_dist)
+        self.time_since_resample += self._env.step_dt
 
     def _update_command_range_curriculum(self):
         """Expand global command ranges by iteration, then fall back to discrete milestones."""

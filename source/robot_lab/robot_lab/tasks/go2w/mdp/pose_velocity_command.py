@@ -100,6 +100,7 @@ class PoseVelocityCommand(CommandTerm):
 
         self._init_terrain_velocity_ranges()
         self._refresh_env_velocity_ranges()
+        self.time_since_resample = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
     def __str__(self) -> str:
         msg = "PoseVelocityCommand:\n"
@@ -401,9 +402,11 @@ class PoseVelocityCommand(CommandTerm):
                 - self.random_ang_vel_z_range[random_velocity_env_ids, 0]
             )
             self.random_ang_vel_z *= torch.abs(self.random_ang_vel_z) > 0.5
+        self.time_since_resample[env_ids] = 0.0
 
     def _update_command(self):
         if self._use_external_command:
+            self.time_since_resample += self._env.step_dt
             return
 
         target_vec = self.pos_command_w - self.robot.data.root_pos_w[:, :3]
@@ -464,6 +467,7 @@ class PoseVelocityCommand(CommandTerm):
         self.vel_command_b[random_velocity_env_ids, 0] = self.random_lin_vel_x[random_velocity_env_ids]
         self.vel_command_b[random_velocity_env_ids, 1] = 0.0
         self.vel_command_b[random_velocity_env_ids, 2] = self.random_ang_vel_z[random_velocity_env_ids]
+        self.time_since_resample += self._env.step_dt
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:

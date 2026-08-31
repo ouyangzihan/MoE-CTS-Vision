@@ -286,7 +286,7 @@ def export_cts_cnn_gru_policy_as_jit(
     """Export recurrent MoE-CTS CNN-GRU (D435i) student to TorchScript.
 
     Deploy interface (matches rl_sar moe_cts_d435i InferActions):
-      forward(single_obs[1,52], depth[1,3600]) -> actions[1,16]
+      forward(single_obs[1,53], depth[1,3600]) -> actions[1,16]
     Internal: term-major proprio history + GRU hidden state.
     """
     exporter = _TorchCNNGRUPolicyExporter(policy, actor_obs_normalizer, single_obs_normalizer)

@@ -204,26 +204,9 @@ class Go2WD435iSceneCfg(Go2WSceneCfg):
 ##
 
 
-@configclass
-class CommandsCfg:
-    """Command specifications for the MDP.
-
-    Default: edge-target PoseVelocityCommand (targets on 9×9 m cell boundary).
-    Revive the previous Go2RLGym random-velocity command with ``--legacy_velocity_command``.
-    """
-
-    # =========================================================================
-    # Edge-target velocity command (default)
-    # - samples goals on ±4.5 m boundary of each 9×9 m terrain cell (+ raycast z)
-    # - modes: rel_standing_envs stand still; rel_reverse_envs reverse into
-    #   target (−vx, heading+π); remainder go forward (+vx)
-    # - ranges: starting command ranges at iter 0 (forward + yaw; no vy)
-    # - command_range_max: hard caps (never expand beyond these)
-    # - command_range_expand_interval: expand every N training iterations
-    # - velocity_ranges: per-terrain caps intersected with the global curriculum
-    # Policy / MDP command is ``(vx, yaw)``; internal vy is always 0.
-    # =========================================================================
-    base_velocity = mdp.PoseVelocityCommandCfg(
+def make_pose_velocity_command_cfg() -> mdp.PoseVelocityCommandCfg:
+    """Hiking-style edge-target PoseVelocityCommand (flat-patch boundary goals)."""
+    return mdp.PoseVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(8.0, 12.0),
         velocity_control_stiffness=1.0,
@@ -233,15 +216,10 @@ class CommandsCfg:
         rel_standing_envs=0.1,
         rel_reverse_envs=0.45,
         reverse_lin_vel_x_abs_max=1.0,  # reverse clamp [-1, 0]; yaw unchanged
-        # ranges=mdp.PoseVelocityCommandCfg.Ranges(
-        #     lin_vel_x=(0.0, 0.5),
-        #     lin_vel_y=(0.0, 0.0),
-        #     ang_vel_z=(-1.0, 1.0),
-        # ),
         ranges=mdp.PoseVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.0, 1.),
+            lin_vel_x=(0.0, 1.0),
             lin_vel_y=(0.0, 0.0),
-            ang_vel_z=(-1., 1.),
+            ang_vel_z=(-1.0, 1.0),
         ),
         command_range_max=mdp.PoseVelocityCommandCfg.CommandRangeMaxCfg(
             lin_vel_x=(0.0, 1.5),
@@ -272,25 +250,36 @@ class CommandsCfg:
 
 
 def make_legacy_go2rl_gym_command_cfg() -> mdp.Go2RLGymCommandCfg:
-    """Build the previous random-velocity Go2RLGym command config."""
+    """Build fixed-range random-velocity Go2RLGym command config."""
+    fixed = (-1.0, 1.0)
     return mdp.Go2RLGymCommandCfg(
+        resampling_time=5.0,
+        resampling_time_range=(5.0, 5.0),
+        dynamic_resample_commands=True,
         ranges=mdp.Go2RLGymCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 0.5),
-            lin_vel_y=(-0.5, 0.5),
-            ang_vel_yaw=(-1.0, 1.0),
+            lin_vel_x=fixed,
+            lin_vel_y=fixed,
+            ang_vel_yaw=fixed,
         ),
         command_range_max=mdp.Go2RLGymCommandCfg.CommandRangeMaxCfg(
-            lin_vel_x=(-2.0, 2.0),
-            lin_vel_y=(-1.0, 1.0),
-            ang_vel_yaw=(-2.0, 2.0),
+            lin_vel_x=fixed,
+            lin_vel_y=fixed,
+            ang_vel_yaw=fixed,
         ),
-        command_range_expand_interval=2000,
-        command_range_expand=mdp.Go2RLGymCommandCfg.CommandRangeExpandCfg(
-            lin_vel_x=0.3,
-            lin_vel_y=0.1,
-            ang_vel_yaw=0.2,
-        ),
+        command_range_expand_interval=None,
+        command_range_curriculum=[],
     )
+
+
+@configclass
+class CommandsCfg:
+    """Command specifications for the MDP.
+
+    Default: Go2RLGym random ``(vx, vy, yaw)`` velocity commands.
+    Enable Hiking-style edge-target PoseVelocityCommand via ``use_pose_velocity_command``.
+    """
+
+    base_velocity = make_legacy_go2rl_gym_command_cfg()
 
 
 def disable_command_range_curriculum(command_cfg) -> None:
@@ -303,18 +292,68 @@ def disable_command_range_curriculum(command_cfg) -> None:
         command_cfg.command_range_curriculum = []
 
 
+def _set_stand_cmd_idxs(env_cfg: ManagerBasedRLEnvCfg, *, pose_velocity: bool) -> None:
+    """Match stand-still penalty indices to the active command layout."""
+    idxs = [0, 1] if pose_velocity else [1, 2]
+    rewards = getattr(env_cfg, "rewards", None)
+    if rewards is None:
+        return
+    for term_name in ("hip_pos_penalty_l1", "joint_pos_penalty_l1"):
+        term = getattr(rewards, term_name, None)
+        if term is not None and "stand_cmd_idxs" in term.params:
+            term.params["stand_cmd_idxs"] = idxs
+
+
+def _set_velocity_command_obs(env_cfg: ManagerBasedRLEnvCfg, *, pose_velocity: bool) -> None:
+    """Use 3-dim ``(vx, vy, yaw)`` obs for Go2RLGym; 2-dim ``(vx, yaw)`` for PoseVelocity."""
+    use_abs_yaw = pose_velocity or bool(getattr(env_cfg, "use_yaw_joint_symmetry", False))
+    obs_func = mdp.generated_commands_abs_yaw if use_abs_yaw else mdp.generated_commands
+    observations = getattr(env_cfg, "observations", None)
+    if observations is None:
+        return
+    for group_name in ("policy", "critic", "single_obs"):
+        group = getattr(observations, group_name, None)
+        if group is not None and hasattr(group, "velocity_commands"):
+            group.velocity_commands.func = obs_func
+
+
 def apply_legacy_velocity_command(env_cfg: ManagerBasedRLEnvCfg) -> None:
-    """Swap PoseVelocityCommand for Go2RLGymCommand and restore gym terrain curriculum."""
+    """Use Go2RLGym random velocity commands and restore gym terrain curriculum."""
     env_cfg.commands.base_velocity = make_legacy_go2rl_gym_command_cfg()
+    disable_command_range_curriculum(env_cfg.commands.base_velocity)
+    if hasattr(env_cfg, "curriculum"):
+        env_cfg.curriculum.terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_gym)
+    _set_stand_cmd_idxs(env_cfg, pose_velocity=False)
+    _set_velocity_command_obs(env_cfg, pose_velocity=False)
+
+
+def apply_pose_velocity_command(env_cfg: ManagerBasedRLEnvCfg) -> None:
+    """Enable Hiking-style edge-target PoseVelocityCommand (flat-patch goals)."""
+    env_cfg.commands.base_velocity = make_pose_velocity_command_cfg()
     if not getattr(env_cfg, "use_reward_weight_curriculum", True):
         disable_command_range_curriculum(env_cfg.commands.base_velocity)
     if hasattr(env_cfg, "curriculum"):
-        env_cfg.curriculum.terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_gym)
-    # Restore stand detection that ignored forward vx under the old command style.
-    if hasattr(env_cfg, "rewards") and hasattr(env_cfg.rewards, "hip_pos_penalty_l1"):
-        term = env_cfg.rewards.hip_pos_penalty_l1
-        if term is not None and "stand_cmd_idxs" in term.params:
-            term.params["stand_cmd_idxs"] = [1, 2]
+        env_cfg.curriculum.terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+    _set_stand_cmd_idxs(env_cfg, pose_velocity=True)
+    _set_velocity_command_obs(env_cfg, pose_velocity=True)
+
+
+def configure_command_delivery(env_cfg: ManagerBasedRLEnvCfg, *, use_pose_velocity: bool) -> None:
+    """Select random Go2RLGym velocity commands or edge-target PoseVelocityCommand."""
+    if use_pose_velocity:
+        apply_pose_velocity_command(env_cfg)
+    else:
+        apply_legacy_velocity_command(env_cfg)
+
+
+def resolve_use_pose_velocity_command(env_cfg: ManagerBasedRLEnvCfg, args_cli) -> bool:
+    """Resolve command mode from env cfg and optional CLI overrides."""
+    use_pose = bool(getattr(env_cfg, "use_pose_velocity_command", False))
+    if getattr(args_cli, "pose_velocity_command", False):
+        use_pose = True
+    if getattr(args_cli, "legacy_velocity_command", False):
+        use_pose = False
+    return use_pose
 
 
 def enable_pose_velocity_target_vis(
@@ -376,7 +415,7 @@ class ObservationsCfg:
             scale=1.0,
         )
         velocity_commands = ObsTerm(
-            func=mdp.generated_commands_abs_yaw,
+            func=mdp.generated_commands,
             params={"command_name": "base_velocity"},
             clip=(-100.0, 100.0),
             scale=1.0,
@@ -426,7 +465,7 @@ class ObservationsCfg:
             scale=1.0,
         )
         velocity_commands = ObsTerm(
-            func=mdp.generated_commands_abs_yaw,
+            func=mdp.generated_commands,
             params={"command_name": "base_velocity"},
             clip=(-100.0, 100.0),
             scale=1.0,
@@ -676,14 +715,24 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_exp,
+        func=mdp.track_lin_vel_xy_exp_post_resample_boost,
         weight=8.0,  # starts 2x; curriculum anneals to 2.0 by iter 500
-        params={"command_name": "base_velocity", "std": 0.7},
+        params={
+            "command_name": "base_velocity",
+            "std": 0.707106781,
+            "boost_duration_s": 0.75,
+            "boost_scale": 2.0,
+        },
     )
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_exp,
+        func=mdp.track_ang_vel_z_exp_post_resample_boost,
         weight=4.0,  # starts 2x; curriculum anneals to 1.0 by iter 500
-        params={"command_name": "base_velocity", "std": 0.7},
+        params={
+            "command_name": "base_velocity",
+            "std": 0.707106781,
+            "boost_duration_s": 0.75,
+            "boost_scale": 2.0,
+        },
     )
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-1.0)#-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.025)#-0.05)
@@ -835,11 +884,11 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP.
 
-    Default uses distance-based ``terrain_levels_vel`` (compatible with PoseVelocityCommand).
-    ``--legacy_velocity_command`` restores ``terrain_levels_vel_gym``.
+    Default uses ``terrain_levels_vel_gym`` with Go2RLGym random velocity commands.
+    ``use_pose_velocity_command`` switches to ``terrain_levels_vel``.
     """
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_gym)
     # Enabled in Go2WD435iEnvCfg when use_mgdp_depth_aux is True.
     depth_noise = None
     step_height_range = CurrTerm(
@@ -882,8 +931,8 @@ class CurriculumCfg:
             "term_name": "joint_pos_penalty_l1",
             "initial_weight": -0.008,
             "final_weight": -0.1,
-            "start_it": 5000,
-            "end_it": 20000,
+            "start_it": 0,
+            "end_it": 7500,
         },
     )
     hip_pos_penalty_l1 = CurrTerm(
@@ -892,8 +941,8 @@ class CurriculumCfg:
             "term_name": "hip_pos_penalty_l1",
             "initial_weight": -0.04,
             "final_weight": -0.5,
-            "start_it": 5000,
-            "end_it": 20000,
+            "start_it": 0,
+            "end_it": 7500,
         },
     )
     wheels_not_in_contact = CurrTerm(
@@ -901,9 +950,9 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.2, #-0.25
-            "start_it": 5000,
-            "end_it": 20000,
+            "final_weight": -0.25, #-0.25
+            "start_it": 0,
+            "end_it": 5000,
         },
     )
     wheel_lateral_drag = CurrTerm(
@@ -912,8 +961,8 @@ class CurriculumCfg:
             "term_name": "wheel_lateral_drag",
             "initial_weight": -0.0,
             "final_weight": -0.08,
-            "start_it": 5000,
-            "end_it": 15000,
+            "start_it": 0,
+            "end_it": 5000,
         },
     )
     local_terrain_tilt_angle = CurrTerm(
@@ -922,8 +971,8 @@ class CurriculumCfg:
             "term_name": "local_terrain_tilt_angle",
             "initial_weight": -0.3,
             "final_weight": -0.6,
-            "start_it": 5000,
-            "end_it": 10000,
+            "start_it": 0,
+            "end_it": 5000,
         },
     )
     terrain_level_progress = CurrTerm(
@@ -933,16 +982,16 @@ class CurriculumCfg:
             "initial_weight": 10.0,
             "final_weight": 5.0,
             "start_it": 0,
-            "end_it": 15000,
+            "end_it": 5000,
         },
     )
     base_linear_velocity = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "lin_vel_z_l2", "initial_weight": -2.0, "final_weight": -0.0, "start_it": 0, "end_it": 3000},
+        params={"term_name": "lin_vel_z_l2", "initial_weight": -2.0, "final_weight": -0.0, "start_it": 0, "end_it": 1500},
     )
     base_height_l2 = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "base_height_l2", "initial_weight": -2.0, "final_weight": -40.0, "start_it": 0, "end_it": 10000},
+        params={"term_name": "base_height_l2", "initial_weight": -2.0, "final_weight": -40.0, "start_it": 0, "end_it": 5000},
     )
 
 
@@ -968,6 +1017,9 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
     # baked (0.0, 0.2) range across all terrain rows). Terrain-level curriculum
     # is unchanged.
     use_reward_weight_curriculum: bool = True
+    # When True: Hiking-style edge-target PoseVelocityCommand (flat-patch goals).
+    # When False (default): Go2RLGym random (vx, vy, yaw) velocity commands.
+    use_pose_velocity_command: bool = False
     # When True: network sees |yaw| and L/R-mirrored joints for yaw < 0;
     # policy actions are un-mirrored before apply. Command term stays signed.
     # Off: use MoE CTS offline L/R batch augmentation instead (see rsl_rl_cfg).
@@ -980,6 +1032,8 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         """Post initialization."""
+        configure_command_delivery(self, use_pose_velocity=self.use_pose_velocity_command)
+
         self.decimation = 4
         self.episode_length_s = 25.0
         self.sim.dt = 0.005
@@ -1038,7 +1092,7 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
 class Go2WD435iEnvCfg(Go2WEnvCfg):
     """Go2W environment variant with the D435i front depth camera enabled."""
 
-    scene: Go2WD435iSceneCfg = Go2WD435iSceneCfg(num_envs=1024, env_spacing=0.5)
+    scene: Go2WD435iSceneCfg = Go2WD435iSceneCfg(num_envs=2048, env_spacing=0.5)
     observations: D435iObservationsCfg = D435iObservationsCfg()
     # Master switch for MGDP-style depth aux training (denoise / height recon /
     # geometry alignment / harsher noise curriculum). False = current pipeline.

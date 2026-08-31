@@ -16,12 +16,10 @@ class Go2WSymmetryMapper(Go2SymmetryMapper):
     LEG_DIM = 12
     WHEEL_DIM = 4
     ACTION_DIM = LEG_DIM + WHEEL_DIM
-    # PoseVelocity exposes ``(vx, yaw)``; flip yaw under left-right reflection.
     VECTOR_SIGNS = {
         "base_lin_vel": [1, -1, 1],
         "base_ang_vel": [-1, 1, -1],
         "projected_gravity": [1, -1, 1],
-        "velocity_commands": [1, -1],
     }
 
     def reverse_legs(self, value: torch.Tensor) -> torch.Tensor:
@@ -76,6 +74,17 @@ class Go2WSymmetryMapper(Go2SymmetryMapper):
 
     def reverse_term(self, name: str, cfg, value: torch.Tensor) -> torch.Tensor:
         """Mirror one observation term according to its semantic name."""
+        if name == "velocity_commands":
+            value = self.restore_history(value, cfg)
+            cmd_dim = value.shape[-1]
+            if cmd_dim == 2:
+                signs = [1, -1]
+            elif cmd_dim == 3:
+                signs = [1, -1, -1]
+            else:
+                raise ValueError(f"Unsupported velocity_commands dim {cmd_dim}; expected 2 or 3.")
+            mirrored = self.reverse_vector(value, signs)
+            return self.flatten_history(mirrored, cfg)
         if name == "joint_pos":
             return self.reverse_legs(value)
         if name in {"joint_vel", "actions"}:

@@ -19,6 +19,56 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def _command_resample_boost_scale(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    boost_duration_s: float,
+    boost_scale: float,
+) -> torch.Tensor:
+    """Return per-env scale for tracking rewards shortly after a command resample."""
+    if boost_scale == 1.0 or boost_duration_s <= 0.0:
+        return torch.ones(env.num_envs, device=env.device)
+    term = env.command_manager.get_term(command_name)
+    time_since = getattr(term, "time_since_resample", None)
+    if time_since is None:
+        return torch.ones(env.num_envs, device=env.device)
+    return torch.where(
+        time_since < boost_duration_s,
+        torch.full_like(time_since, boost_scale),
+        torch.ones_like(time_since),
+    )
+
+
+def track_lin_vel_xy_exp_post_resample_boost(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str,
+    boost_duration_s: float = 0.75,
+    boost_scale: float = 2.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """``track_lin_vel_xy_exp`` with optional boost right after command changes."""
+    from robot_lab.tasks.go2.mdp.rewards import track_lin_vel_xy_exp
+
+    reward = track_lin_vel_xy_exp(env, std, command_name, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+
+
+def track_ang_vel_z_exp_post_resample_boost(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str,
+    boost_duration_s: float = 0.75,
+    boost_scale: float = 2.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """``track_ang_vel_z_exp`` with optional boost right after command changes."""
+    from robot_lab.tasks.go2.mdp.rewards import track_ang_vel_z_exp
+
+    reward = track_ang_vel_z_exp(env, std, command_name, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+
+
 def dont_wait(
     env: ManagerBasedRLEnv,
     command_name: str = "base_velocity",

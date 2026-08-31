@@ -44,7 +44,13 @@ parser.add_argument(
     "--legacy_velocity_command",
     action="store_true",
     default=False,
-    help="Use the previous Go2RLGym random velocity command instead of flat-patch PoseVelocityCommand.",
+    help="Force Go2RLGym random (vx, vy, yaw) commands (default when use_pose_velocity_command is False).",
+)
+parser.add_argument(
+    "--pose_velocity_command",
+    action="store_true",
+    default=False,
+    help="Enable Hiking-style edge-target PoseVelocityCommand (flat-patch goals).",
 )
 parser.add_argument(
     "--redo",
@@ -125,16 +131,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
-    if getattr(args_cli, "legacy_velocity_command", False):
-        from robot_lab.tasks.go2w.env_cfg import apply_legacy_velocity_command
+    from robot_lab.tasks.go2w.env_cfg import (
+        configure_command_delivery,
+        enable_pose_velocity_target_vis,
+        resolve_use_pose_velocity_command,
+    )
 
-        apply_legacy_velocity_command(env_cfg)
-        print("[INFO] Using legacy Go2RLGymCommand (--legacy_velocity_command).")
-    else:
-        from robot_lab.tasks.go2w.env_cfg import enable_pose_velocity_target_vis
-
+    use_pose_velocity = resolve_use_pose_velocity_command(env_cfg, args_cli)
+    configure_command_delivery(env_cfg, use_pose_velocity=use_pose_velocity)
+    if use_pose_velocity:
         if enable_pose_velocity_target_vis(env_cfg):
             print("[INFO] PoseVelocityCommand target flat-patch visualization enabled.")
+    else:
+        print("[INFO] Using Go2RLGym random velocity command (vx, vy, yaw).")
 
     # Sync MGDP-style depth aux training from env master switch → policy/algorithm.
     # When False (default), the current D435i MoE-CTS pipeline is unchanged.
