@@ -73,9 +73,12 @@ class Go2WSymmetryMapper(Go2SymmetryMapper):
         return super().permute_joints(value)
 
     def reverse_term(self, name: str, cfg, value: torch.Tensor) -> torch.Tensor:
-        """Mirror one observation term according to its semantic name."""
+        """Mirror one observation term according to its semantic name.
+
+        History restore/flatten is handled by ``reverse_obs_group``; ``value`` here
+        already has shape ``[..., term_dim]`` (e.g. cmd dim 2 or 3).
+        """
         if name == "velocity_commands":
-            value = self.restore_history(value, cfg)
             cmd_dim = value.shape[-1]
             if cmd_dim == 2:
                 signs = [1, -1]
@@ -83,8 +86,7 @@ class Go2WSymmetryMapper(Go2SymmetryMapper):
                 signs = [1, -1, -1]
             else:
                 raise ValueError(f"Unsupported velocity_commands dim {cmd_dim}; expected 2 or 3.")
-            mirrored = self.reverse_vector(value, signs)
-            return self.flatten_history(mirrored, cfg)
+            return self.reverse_vector(value, signs)
         if name == "joint_pos":
             return self.reverse_legs(value)
         if name in {"joint_vel", "actions"}:
