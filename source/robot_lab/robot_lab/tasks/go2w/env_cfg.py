@@ -317,12 +317,25 @@ def _set_velocity_command_obs(env_cfg: ManagerBasedRLEnvCfg, *, pose_velocity: b
             group.velocity_commands.func = obs_func
 
 
+def _uses_plane_terrain(env_cfg: ManagerBasedRLEnvCfg) -> bool:
+    """True when the scene has no procedural terrain generator (flat plane / USD)."""
+    terrain = getattr(getattr(env_cfg, "scene", None), "terrain", None)
+    if terrain is None:
+        return False
+    if getattr(terrain, "terrain_type", None) == "plane":
+        return True
+    return getattr(terrain, "terrain_generator", None) is None
+
+
 def apply_legacy_velocity_command(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Use Go2RLGym random velocity commands and restore gym terrain curriculum."""
     env_cfg.commands.base_velocity = make_legacy_go2rl_gym_command_cfg()
     disable_command_range_curriculum(env_cfg.commands.base_velocity)
     if hasattr(env_cfg, "curriculum"):
-        env_cfg.curriculum.terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_gym)
+        if _uses_plane_terrain(env_cfg):
+            env_cfg.curriculum.terrain_levels = None
+        else:
+            env_cfg.curriculum.terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_gym)
     _set_stand_cmd_idxs(env_cfg, pose_velocity=False)
     _set_velocity_command_obs(env_cfg, pose_velocity=False)
 
@@ -333,7 +346,10 @@ def apply_pose_velocity_command(env_cfg: ManagerBasedRLEnvCfg) -> None:
     if not getattr(env_cfg, "use_reward_weight_curriculum", True):
         disable_command_range_curriculum(env_cfg.commands.base_velocity)
     if hasattr(env_cfg, "curriculum"):
-        env_cfg.curriculum.terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+        if _uses_plane_terrain(env_cfg):
+            env_cfg.curriculum.terrain_levels = None
+        else:
+            env_cfg.curriculum.terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
     _set_stand_cmd_idxs(env_cfg, pose_velocity=True)
     _set_velocity_command_obs(env_cfg, pose_velocity=True)
 

@@ -158,9 +158,12 @@ class LoggerCTS:
                         self.writer.add_scalar("Episode/" + key, value, it)
                         extras_string += f"""{f"Mean episode {key}:":>{pad}} {value:.4f}\n"""
 
-            # Log losses
+            # Log losses (ReDo metrics go to their own TensorBoard group)
             for key, value in loss_dict.items():
-                self.writer.add_scalar(f"Loss/{key}", value, it)
+                if key.startswith("redo/"):
+                    self.writer.add_scalar(f"ReDo/{key[5:]}", value, it)
+                else:
+                    self.writer.add_scalar(f"Loss/{key}", value, it)
             self.writer.add_scalar("Loss/learning_rate", learning_rate, it)
 
             # Log noise std
@@ -215,7 +218,10 @@ class LoggerCTS:
 
             # Print losses
             for key, value in loss_dict.items():
-                log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""
+                if key.startswith("redo/"):
+                    log_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
+                else:
+                    log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""
 
             # Print rewards and episode length
             if self.cfg["algorithm"]["rnd_cfg"] and len(self.erewbuffer) > 0:

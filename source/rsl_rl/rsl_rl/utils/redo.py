@@ -210,7 +210,7 @@ def discover_policy_recycle_layers(
             root = root[0]
         if module_name == "student_moe_encoder":
             moe = root.moe
-            specs.extend(discover_mlp_recycle_layers(moe.gating_network[0], f"{module_name}/gating"))
+            specs.extend(discover_mlp_recycle_layers(moe.gating_mlp, f"{module_name}/gating"))
             specs.extend(discover_mlp_recycle_layers(moe.experts.backbone, f"{module_name}/experts_backbone"))
             continue
         if module_name == "student_cnn_gru":
@@ -351,6 +351,12 @@ class RedoManager:
             log_dict.update(reset_logs)
             if learning_iteration is not None:
                 log_dict["redo/learning_iteration"] = float(learning_iteration)
+        if log_dict:
+            print(
+                f"[INFO] ReDo {'recycle+log' if should_reset else 'log'} "
+                f"at gradient_step={step} iter={learning_iteration} "
+                f"({len(log_dict)} metrics)."
+            )
         return log_dict
 
     @torch.no_grad()

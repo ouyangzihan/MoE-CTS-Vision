@@ -41,6 +41,7 @@ class RslRlMoeCtsActorCriticCfg(RslRlPpoActorCriticCfg):
     class_name = "ActorCriticMoECTS"
     init_noise_std = 1.0
     expert_num = 8 # number of experts in the student model
+    gating_top_k: int | None = None  # sparse gating: only top-k experts active (None = dense)
     latent_dim = 32
     norm_type = 'l2norm' # normalization type for encoders: l2norm, simnorm
     teacher_encoder_hidden_dims = [512, 256]

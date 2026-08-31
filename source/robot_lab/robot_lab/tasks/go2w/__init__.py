@@ -51,8 +51,8 @@ gym.register(
     entry_point="robot_lab.tasks.go2w.env.go2w_env:Go2WEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.env_cfg:Go2WEnvSymmetryCfg",
-        "rsl_rl_cfg_entry_point": f"{__name__}.rsl_rl_cfg:Go2WMoECTSSymmetryRunnerCfg",
+        "env_cfg_entry_point": f"{__name__}.symmetry_training_cfg:Go2WSymmetryFlatWtwEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__}.symmetry_training_cfg:Go2WSymmetryFlatWtwRunnerCfg",
     },
 )
 

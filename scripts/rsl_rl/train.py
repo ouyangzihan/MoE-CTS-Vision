@@ -175,11 +175,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
               f"height={getattr(getattr(agent_cfg, 'algorithm', None), 'height_recon_coef', None)}, "
               f"align={getattr(getattr(agent_cfg, 'algorithm', None), 'depth_align_coef', None)})")
 
-    agent_cfg_dict = agent_cfg.to_dict()
-    agent_cfg_dict["robogauge"] = {
-        "enabled": args_cli.robogauge,
-        "port": args_cli.robogauge_port,
-    }
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -196,6 +191,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             f"reset_end_step={agent_cfg.algorithm.redo_cfg.reset_end_step}, "
             f"recycle_rate={agent_cfg.algorithm.redo_cfg.recycle_rate})"
         )
+
+    # Snapshot after all agent_cfg mutations so flags like --redo actually reach the runner.
+    agent_cfg_dict = agent_cfg.to_dict()
+    agent_cfg_dict["robogauge"] = {
+        "enabled": args_cli.robogauge,
+        "port": args_cli.robogauge_port,
+    }
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here

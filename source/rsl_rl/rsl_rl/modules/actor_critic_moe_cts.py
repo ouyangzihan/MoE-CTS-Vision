@@ -23,6 +23,7 @@ class StudentMoEEncoder(nn.Module):
         output_dim,
         activation='elu',
         norm_type='l2norm',
+        gating_top_k: int | None = None,
     ):
         super().__init__()
         self.norm_layer = L2Norm() if norm_type == 'l2norm' else SimNorm()
@@ -32,6 +33,7 @@ class StudentMoEEncoder(nn.Module):
             hidden_dims=hidden_dims,
             output_dim=output_dim,
             activation=activation,
+            gating_top_k=gating_top_k,
         )
     
     def forward(self, obs):
@@ -60,6 +62,7 @@ class ActorCriticMoECTS(nn.Module):
         state_dependent_std: bool = False,
         latent_dim: int = 32,
         norm_type: str = 'l2norm',
+        gating_top_k: int | None = None,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -107,6 +110,7 @@ class ActorCriticMoECTS(nn.Module):
             output_dim=latent_dim,
             activation=activation,
             norm_type=norm_type,
+            gating_top_k=gating_top_k,
         )
         print(f"Student MoE Encoder: {self.student_moe_encoder}")
         

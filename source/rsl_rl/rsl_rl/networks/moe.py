@@ -143,8 +143,11 @@ class MoE(nn.Module):
                  hidden_dims,
                  output_dim,
                  activation='elu',
+                 gating_top_k: int | None = None,
     ):
         super().__init__()
+        self.expert_num = expert_num
+        self.gating_top_k = gating_top_k
 
         # Expert networks
         self.experts = Experts(
@@ -156,14 +159,35 @@ class MoE(nn.Module):
             activation=activation,
         )
         
-        # Gating network
-        self.gating_network = nn.Sequential(
-            MLP(input_dim, expert_num, hidden_dims, activation),
-            nn.Softmax(dim=-1)
-        )
+        # Gating network (softmax applied in forward for optional top-k sparsity)
+        self.gating_mlp = MLP(input_dim, expert_num, hidden_dims, activation)
+
+    def _remap_legacy_gating_keys(self, state_dict: dict) -> dict:
+        """Map pre-sparse-gating checkpoints (``gating_network.0.*``) to ``gating_mlp.*``."""
+        remapped: dict = {}
+        for key, value in state_dict.items():
+            legacy_prefix = ".gating_network.0."
+            if legacy_prefix in key:
+                remapped[key.replace(legacy_prefix, ".gating_mlp.")] = value
+            elif ".gating_network.1." in key:
+                # Old Sequential ended with parameter-free Softmax; skip.
+                continue
+            else:
+                remapped[key] = value
+        return remapped
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        return super().load_state_dict(self._remap_legacy_gating_keys(state_dict), strict=strict)
 
     def forward(self, x):
-        weights = self.gating_network(x)  # (B, expert_num)
+        logits = self.gating_mlp(x)
+        if self.gating_top_k is not None and self.gating_top_k < self.expert_num:
+            top_k_logits, top_k_indices = torch.topk(logits, self.gating_top_k, dim=-1)
+            top_k_weights = F.softmax(top_k_logits, dim=-1)
+            weights = torch.zeros_like(logits)
+            weights.scatter_(1, top_k_indices, top_k_weights)
+        else:
+            weights = F.softmax(logits, dim=-1)
         expert_outs = self.experts(x)  # (B, expert_num, output_dim)
         output = torch.sum(weights.unsqueeze(-1) * expert_outs, dim=1)  # (B, output_dim)
         return output, weights

@@ -177,6 +177,11 @@ class MoECTS:
                 cfg=redo_config,
                 device=self.device,
             )
+            print(
+                f"[INFO] ReDo manager constructed with {len(self.redo_manager.layer_specs)} recyclable layers "
+                f"(logging_period={redo_config.logging_period} grad steps, "
+                f"reset_period={redo_config.reset_period} grad steps)."
+            )
         
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:

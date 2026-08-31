@@ -289,9 +289,11 @@ def terrain_levels_vel(
     """
     asset: Articulation = env.scene[asset_cfg.name]
     terrain: TerrainImporter = env.scene.terrain
+    terrain_cfg = terrain.cfg.terrain_generator
+    if terrain_cfg is None:
+        return {"mean": torch.zeros((), device=env.device)}
     command = env.command_manager.get_command("base_velocity")
     distance = torch.norm(asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1)
-    terrain_cfg = terrain.cfg.terrain_generator
     border = getattr(terrain_cfg, "sub_terrain_border_width", 0.0) or 0.0
     terrain_length = max(0.0, terrain_cfg.size[0] - 2.0 * border)
     move_up = distance > terrain_length / 2
@@ -323,6 +325,9 @@ def terrain_levels_vel_gym(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> di
     ``Curriculum/terrain_levels/mean`` and ``Curriculum/terrain_levels/<name>``.
     """
     terrain = env.scene.terrain
+    terrain_cfg = terrain.cfg.terrain_generator
+    if terrain_cfg is None:
+        return {"mean": torch.zeros((), device=env.device)}
     command: Go2RLGymCommand = env.command_manager.get_term("base_velocity")
 
     max_move_dist = command.max_move_distance[env_ids]
@@ -331,7 +336,6 @@ def terrain_levels_vel_gym(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> di
     resampling_time = command.cfg.resampling_time
     zero_prob = command.zero_command_prob
     
-    terrain_cfg = terrain.cfg.terrain_generator
     sub_terrain_border_width = getattr(terrain_cfg, "sub_terrain_border_width", 0.0) or 0.0
     terrain_length = max(0.0, terrain_cfg.size[0] - 2.0 * sub_terrain_border_width)
     move_up = max_move_dist > terrain_length / 2

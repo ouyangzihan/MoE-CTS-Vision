@@ -91,7 +91,21 @@ class Go2RLGymCommand(CommandTerm):
 
     def _init_terrain_infos(self):
         """Initialize terrain types and indices for each environment."""
-        self.terrain_types = list(self._env.scene.terrain.cfg.terrain_generator.sub_terrains.keys())
+        terrain_cfg = self._env.scene.terrain.cfg
+        if terrain_cfg.terrain_type == "plane" or terrain_cfg.terrain_generator is None:
+            # Infinite plane: treat every env as flat with global command caps.
+            self.terrain_types = ["flat"]
+            if "flat" not in self.cfg.terrain_max_command_ranges:
+                raise ValueError(
+                    "Terrain type 'flat' is not defined in cfg.terrain_max_command_ranges."
+                )
+            self.terrain_type2idx = {"flat": 0}
+            self.terrain_idxs = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            spacing = float(terrain_cfg.env_spacing or 0.5)
+            self.terrain_length = spacing * 1000.0
+            return
+
+        self.terrain_types = list(terrain_cfg.terrain_generator.sub_terrains.keys())
         for terrain_type in self.terrain_types:
             if terrain_type not in self.cfg.terrain_max_command_ranges:
                 raise ValueError(f"Terrain type '{terrain_type}' is not defined in cfg.terrain_max_command_ranges.")
@@ -101,9 +115,9 @@ class Go2RLGymCommand(CommandTerm):
             idxs = is_robot_on_terrain(self._env, terrain_type).nonzero().flatten()
             if len(idxs) > 0:
                 self.terrain_idxs[idxs] = self.terrain_type2idx[terrain_type]
-        terrain_cfg = self._env.scene.terrain.cfg.terrain_generator
-        sub_terrain_border_width = getattr(terrain_cfg, "sub_terrain_border_width", 0.0) or 0.0
-        self.terrain_length = max(0.0, terrain_cfg.size[0] - 2.0 * sub_terrain_border_width)
+        generator_cfg = terrain_cfg.terrain_generator
+        sub_terrain_border_width = getattr(generator_cfg, "sub_terrain_border_width", 0.0) or 0.0
+        self.terrain_length = max(0.0, generator_cfg.size[0] - 2.0 * sub_terrain_border_width)
 
     @property
     def command(self) -> torch.Tensor:
