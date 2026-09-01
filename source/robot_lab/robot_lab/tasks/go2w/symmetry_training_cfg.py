@@ -32,12 +32,18 @@ WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 4.0
 WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
 
 _WTW_GAIT_TIMING_PARAMS = {
-    "gait_frequency": 3.0,
+    "gait_frequency": 1.5,
     "gait_phase": 0.5,
     "gait_offset": 0.0,
     "gait_bound": 0.0,
     "gait_duration": 0.5,
     "kappa_gait_probs": 0.07,
+}
+
+# Disable WTW gait shaping on straight-line commands (vy=0 and yaw=0).
+_WTW_VY_YAW_GATE_PARAMS = {
+    "command_name": "base_velocity",
+    "zero_when_vy_yaw_zero": True,
 }
 
 
@@ -73,31 +79,35 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
     wtw_jump = RewTerm(
         func=mdp.wtw_jump,
         weight=WTW_JUMP_WEIGHT,
-        params={"base_height_target": BASE_HEIGHT_TARGET},
+        params={
+            "base_height_target": BASE_HEIGHT_TARGET,
+            **_WTW_VY_YAW_GATE_PARAMS,
+        },
     )
     wtw_orientation_control = RewTerm(
         func=mdp.wtw_orientation_control,
         weight=WTW_ORIENTATION_CONTROL_WEIGHT,
-        params={},
+        params={**_WTW_VY_YAW_GATE_PARAMS},
     )
     wtw_raibert_heuristic = RewTerm(
         func=mdp.wtw_raibert_heuristic,
         weight=WTW_RAIBERT_HEURISTIC_WEIGHT,
         params={
-            "command_name": "base_velocity",
-            "stance_width_cmd": 0.3,
-            "stance_length_cmd": 0.45,
+            "stance_width_cmd": 0.284,
+            "stance_length_cmd": 0.387,
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
+            **_WTW_VY_YAW_GATE_PARAMS,
         },
     )
     wtw_feet_clearance_cmd_linear = RewTerm(
         func=mdp.wtw_feet_clearance_cmd_linear,
         weight=WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT,
         params={
-            "footswing_height_cmd": 0.19,
+            "footswing_height_cmd": 0.07,
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
+            **_WTW_VY_YAW_GATE_PARAMS,
         },
     )
     wtw_tracking_contacts_shaped_force = RewTerm(
@@ -107,6 +117,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
             "gait_force_sigma": 100.0,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
+            **_WTW_VY_YAW_GATE_PARAMS,
         },
     )
     wtw_tracking_contacts_shaped_vel = RewTerm(
@@ -116,6 +127,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
             "gait_vel_sigma": 10.0,
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
+            **_WTW_VY_YAW_GATE_PARAMS,
         },
     )
 

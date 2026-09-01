@@ -131,6 +131,33 @@ def _update_wtw_gait_state(env: ManagerBasedRLEnv, params: dict) -> WalkTheseWay
     return env._wtw_gait_state
 
 
+def _vy_yaw_command_active_mask(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    command_threshold: float = 1e-3,
+) -> torch.Tensor:
+    """True when lateral ``vy`` or yaw-rate command is non-zero."""
+    cmd = env.command_manager.get_command(command_name)
+    if cmd.shape[1] > 2:
+        vy = cmd[:, 1]
+    else:
+        vy = torch.zeros(env.num_envs, device=env.device)
+    yaw = cmd[:, -1]
+    return (vy.abs() > command_threshold) | (yaw.abs() > command_threshold)
+
+
+def _apply_wtw_vy_yaw_gate(
+    env: ManagerBasedRLEnv,
+    reward: torch.Tensor,
+    command_name: str,
+    zero_when_vy_yaw_zero: bool,
+    command_threshold: float,
+) -> torch.Tensor:
+    if not zero_when_vy_yaw_zero:
+        return reward
+    return reward * _vy_yaw_command_active_mask(env, command_name, command_threshold)
+
+
 def _foot_positions_body_frame(
     env: ManagerBasedRLEnv, asset: Articulation, foot_body_ids: list[int] | slice
 ) -> torch.Tensor:
@@ -149,12 +176,16 @@ def wtw_jump(
     base_height_target: float,
     body_height_cmd: float = 0.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_name: str = "base_velocity",
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
 ) -> torch.Tensor:
     """Track commanded body height (WTW ``jump``)."""
     asset: Articulation = env.scene[asset_cfg.name]
     body_height = asset.data.root_pos_w[:, 2]
     target = body_height_cmd + base_height_target
-    return -torch.square(body_height - target)
+    reward = -torch.square(body_height - target)
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
 def wtw_orientation_control(
@@ -162,6 +193,9 @@ def wtw_orientation_control(
     body_pitch_cmd: float = 0.0,
     body_roll_cmd: float = 0.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_name: str = "base_velocity",
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
 ) -> torch.Tensor:
     """Track commanded body pitch / roll via projected gravity (WTW ``orientation_control``)."""
     asset: Articulation = env.scene[asset_cfg.name]
@@ -172,7 +206,8 @@ def wtw_orientation_control(
     desired_quat = quat_mul(quat_roll, quat_pitch)
     desired_projected_gravity = quat_apply_inverse(desired_quat, gravity)
     projected_gravity = asset.data.projected_gravity_b
-    return torch.sum(torch.square(projected_gravity[:, :2] - desired_projected_gravity[:, :2]), dim=1)
+    reward = torch.sum(torch.square(projected_gravity[:, :2] - desired_projected_gravity[:, :2]), dim=1)
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
 def wtw_raibert_heuristic(
@@ -187,6 +222,8 @@ def wtw_raibert_heuristic(
     gait_bound: float = 0.0,
     gait_duration: float = 0.5,
     kappa_gait_probs: float = 0.07,
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
 ) -> torch.Tensor:
     """Raibert foot-placement heuristic (WTW ``raibert_heuristic``)."""
     gait_params = _gait_params_dict(
@@ -221,7 +258,8 @@ def wtw_raibert_heuristic(
     desired_xs = desired_xs + desired_xs_offset
     desired_footsteps = torch.stack((desired_xs, desired_ys), dim=2)
     err = torch.abs(desired_footsteps - footsteps[:, :, 0:2])
-    return torch.sum(torch.square(err), dim=(1, 2))
+    reward = torch.sum(torch.square(err), dim=(1, 2))
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
 def wtw_feet_clearance_cmd_linear(
@@ -235,6 +273,9 @@ def wtw_feet_clearance_cmd_linear(
     gait_bound: float = 0.0,
     gait_duration: float = 0.5,
     kappa_gait_probs: float = 0.07,
+    command_name: str = "base_velocity",
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
 ) -> torch.Tensor:
     """Track commanded foot-swing height during swing (WTW ``feet_clearance_cmd_linear``)."""
     gait_params = _gait_params_dict(
@@ -246,7 +287,8 @@ def wtw_feet_clearance_cmd_linear(
     target_height = footswing_height_cmd + foot_radius
     swing_mask = 1.0 - gait.desired_contact_states
     rew = torch.square(target_height - foot_height) * swing_mask
-    return torch.sum(rew, dim=1)
+    reward = torch.sum(rew, dim=1)
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
 def wtw_tracking_contacts_shaped_force(
@@ -259,6 +301,9 @@ def wtw_tracking_contacts_shaped_force(
     gait_bound: float = 0.0,
     gait_duration: float = 0.5,
     kappa_gait_probs: float = 0.07,
+    command_name: str = "base_velocity",
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
 ) -> torch.Tensor:
     """Shaped contact-force tracking (WTW ``tracking_contacts_shaped_force``)."""
     from isaaclab.sensors import ContactSensor
@@ -275,7 +320,8 @@ def wtw_tracking_contacts_shaped_force(
         reward += -(1.0 - desired_contact[:, i]) * (
             1.0 - torch.exp(-foot_forces[:, i].square() / gait_force_sigma)
         )
-    return reward / foot_forces.shape[1]
+    reward = reward / foot_forces.shape[1]
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
 def wtw_tracking_contacts_shaped_vel(
@@ -288,6 +334,9 @@ def wtw_tracking_contacts_shaped_vel(
     gait_bound: float = 0.0,
     gait_duration: float = 0.5,
     kappa_gait_probs: float = 0.07,
+    command_name: str = "base_velocity",
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
 ) -> torch.Tensor:
     """Shaped foot-velocity tracking during stance (WTW ``tracking_contacts_shaped_vel``)."""
     gait_params = _gait_params_dict(
@@ -302,4 +351,5 @@ def wtw_tracking_contacts_shaped_vel(
         reward += -desired_contact[:, i] * (
             1.0 - torch.exp(-foot_velocities[:, i].square() / gait_vel_sigma)
         )
-    return reward / foot_velocities.shape[1]
+    reward = reward / foot_velocities.shape[1]
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)

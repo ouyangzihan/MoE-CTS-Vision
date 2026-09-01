@@ -569,7 +569,8 @@ class D435iObservationsCfg(ObservationsCfg):
                 "hole_blob_prob": 0.075,
                 "hole_blob_size_range": (3, 12),
                 "use_cfg_noise_overrides": False,
-                # None → far (legacy). MGDP aux mode sets 0.0 (holes as near/invalid).
+                # Training: per-env 50/50 dropout fill as 0.0 (near) or far (legacy None).
+                "randomize_dropout_fill_value": True,
                 "dropout_fill_value": None,
             },
             clip=(0.0, 5.0),
@@ -1145,6 +1146,7 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
             # Match MGDP: dropout → 0 unless user overrides.
             if self.depth_dropout_fill_value is None:
                 self.depth_dropout_fill_value = 0.0
+            depth_term.params["randomize_dropout_fill_value"] = False
             depth_term.params["dropout_fill_value"] = self.depth_dropout_fill_value
             self.curriculum.depth_noise = CurrTerm(
                 func=mdp.depth_noise_curriculum,
@@ -1166,6 +1168,7 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
             self.observations.clean_depth = None
             self.observations.height_map = None
             depth_term.params["use_cfg_noise_overrides"] = False
+            depth_term.params["randomize_dropout_fill_value"] = True
             depth_term.params["dropout_fill_value"] = None
             if getattr(self.curriculum, "depth_noise", None) is not None:
                 self.curriculum.depth_noise = None

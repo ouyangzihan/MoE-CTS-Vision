@@ -283,6 +283,7 @@ def add_depth_noise(
     hole_blob_prob: float = 0.0,
     hole_blob_size_range: tuple[int, int] = (3, 12),
     dropout_fill_value: float | None = None,
+    randomize_dropout_fill_value: bool = False,
 ) -> torch.Tensor:
     """Apply synthetic depth noise (Gaussian, dropout, and optional outdoor artifacts).
 
@@ -293,6 +294,8 @@ def add_depth_noise(
         dropout_prob: Per-pixel Bernoulli hole probability.
         dropout_fill_value: Value written into dropout holes. ``None`` → ``max_depth``
             (legacy). Official MGDP uses ``0.0`` (near / invalid).
+        randomize_dropout_fill_value: When True, each env independently uses ``0.0`` or
+            ``max_depth`` (legacy ``None`` fill) for dropout holes with 50/50 probability.
         depth_dependent_noise_scale: Extra Gaussian std scale as
             ``noise_std * scale * (depth / max_depth)``.
         edge_speckle_prob: Probability of writing far values along strong depth edges.
@@ -336,8 +339,18 @@ def add_depth_noise(
                 noisy[env_i, y0 : y0 + side, x0 : x0 + side] = max_depth
 
     if dropout_prob > 0.0:
-        fill = max_depth if dropout_fill_value is None else float(dropout_fill_value)
-        noisy = noisy.masked_fill(torch.rand_like(noisy) < dropout_prob, fill)
+        dropout_mask = torch.rand_like(noisy) < dropout_prob
+        if randomize_dropout_fill_value:
+            use_zero_fill = torch.rand(noisy.shape[0], 1, 1, device=noisy.device) < 0.5
+            fill = torch.where(
+                use_zero_fill,
+                torch.zeros_like(noisy),
+                torch.full_like(noisy, max_depth),
+            )
+            noisy = torch.where(dropout_mask, fill, noisy)
+        else:
+            fill = max_depth if dropout_fill_value is None else float(dropout_fill_value)
+            noisy = noisy.masked_fill(dropout_mask, fill)
 
     if temporal_flicker_std > 0.0 and prev_depth is not None and prev_depth.shape == noisy.shape:
         mix = torch.rand(noisy.shape[0], 1, 1, device=noisy.device).clamp(0.0, 0.35)
@@ -366,6 +379,7 @@ def process_depth_image(
     hole_blob_size_range: tuple[int, int] = (3, 12),
     use_cfg_noise_overrides: bool = False,
     dropout_fill_value: float | None = None,
+    randomize_dropout_fill_value: bool = False,
 ) -> torch.Tensor:
     """Read ray-caster depth, optionally delayed/noisy, and flatten it."""
     camera = env.scene.sensors[sensor_cfg.name]
@@ -428,6 +442,7 @@ def process_depth_image(
             hole_blob_prob=hole_blob_prob,
             hole_blob_size_range=hole_blob_size_range,
             dropout_fill_value=dropout_fill_value,
+            randomize_dropout_fill_value=randomize_dropout_fill_value,
         )
         setattr(env, prev_key, depth.detach().clone())
 
