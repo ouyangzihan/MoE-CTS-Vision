@@ -48,6 +48,22 @@ def _get_norm_per_neuron(param: torch.Tensor, axes: tuple[int, ...]) -> torch.Te
     return torch.sqrt(torch.sum(param.pow(2), dim=axes))
 
 
+def _fill_uniform(
+    tensor: torch.Tensor,
+    low: float,
+    high: float,
+    generator: torch.Generator | None,
+) -> None:
+    """Fill a tensor uniformly; only use *generator* when it matches *tensor*'s device."""
+    if generator is not None and tensor.device.type == generator.device.type:
+        if tensor.device.type == "cuda" and tensor.device.index != generator.device.index:
+            tensor.uniform_(low, high)
+        else:
+            tensor.uniform_(low, high, generator=generator)
+    else:
+        tensor.uniform_(low, high)
+
+
 def weight_reinit_random(
     param: torch.Tensor,
     mask: torch.Tensor,
@@ -65,7 +81,7 @@ def weight_reinit_random(
         fan_in = param.shape[1] if param.ndim == 2 else param.shape[1] * param.shape[2] * param.shape[3]
         bound = math.sqrt(6.0 / max(fan_in, 1))
         random_values = torch.empty_like(param)
-        random_values.uniform_(-bound, bound, generator=generator)
+        _fill_uniform(random_values, -bound, bound, generator)
         if weight_scaling:
             if weights_type == "outgoing":
                 axes = tuple(i for i in range(param.ndim) if i != param.ndim - 2)
@@ -294,7 +310,11 @@ class RedoManager:
         if self.cfg.reset_start_layer_idx > 0:
             self.layer_specs = self.layer_specs[self.cfg.reset_start_layer_idx :]
         self._register_activation_hooks()
-        self._generator = torch.Generator()
+        gen_device = torch.device(self.device)
+        if gen_device.type == "cuda":
+            self._generator = torch.Generator(device=gen_device)
+        else:
+            self._generator = torch.Generator()
         self._generator.manual_seed(self.cfg.seed)
 
     def _register_activation_hooks(self) -> None:
@@ -383,6 +403,10 @@ class RedoManager:
         if training:
             self.policy.train()
 
+    def _scheduled_recycle_fraction(self, update_step: int) -> float:
+        multiplier = max(0.0, update_step / max(self.cfg.reset_end_step, 1))
+        return math.cos(math.pi * 0.5 * multiplier) * self.cfg.recycle_rate
+
     def _score_to_mask(
         self,
         activation: torch.Tensor,
@@ -391,20 +415,19 @@ class RedoManager:
     ) -> torch.Tensor:
         score = estimate_neuron_score(activation, sub_mean_score=self.cfg.sub_mean_score)
         if self.cfg.score_type == "random":
-            score = score[torch.randperm(score.numel(), generator=self._generator, device=score.device)]
+            perm = torch.randperm(score.numel(), device=score.device)
+            if self._generator is not None and score.device.type == self._generator.device.type:
+                perm = torch.randperm(score.numel(), generator=self._generator, device=score.device)
+            score = score.reshape(-1)[perm].reshape(score.shape)
         elif self.cfg.score_type == "redo_inverted":
             score = -score
         elif self.cfg.score_type == "redo":
-            multiplier = max(0.0, update_step / max(self.cfg.reset_end_step, 1))
-            ones_fraction = math.cos(math.pi * 0.5 * multiplier) * self.cfg.recycle_rate
-            return leastk_mask(score, ones_fraction)
+            return leastk_mask(score, self._scheduled_recycle_fraction(update_step))
         elif self.cfg.score_type == "threshold":
             return (score <= self.cfg.dead_neurons_threshold).float()
         else:
             raise ValueError(f"Unknown ReDo score_type: {self.cfg.score_type}")
-        multiplier = max(0.0, update_step / max(self.cfg.reset_end_step, 1))
-        ones_fraction = math.cos(math.pi * 0.5 * multiplier) * self.cfg.recycle_rate
-        return leastk_mask(score, ones_fraction)
+        return leastk_mask(score, self._scheduled_recycle_fraction(update_step))
 
     def _recycle_neurons(self, update_step: int) -> dict[str, float]:
         recycled_counts: dict[str, float] = {}
@@ -480,7 +503,10 @@ class RedoManager:
         log_dict: dict[str, float] = {}
         total_neurons = 0.0
         total_dead = 0.0
+        total_dormant = 0.0
         current_scores: dict[str, torch.Tensor] = {}
+        recycle_fraction = self._scheduled_recycle_fraction(self.gradient_step)
+        log_dict["redo/scheduled_recycle_fraction"] = recycle_fraction
         for spec in self.layer_specs:
             activation = self._activations.get(spec.name)
             if activation is None:
@@ -488,16 +514,27 @@ class RedoManager:
             score = estimate_neuron_score(activation, sub_mean_score=self.cfg.sub_mean_score)
             current_scores[spec.name] = score
             dead_mask = score <= self.cfg.dead_neurons_threshold
+            dormant_mask = leastk_mask(score, recycle_fraction)
             layer_size = float(score.numel())
             dead_count = float(dead_mask.sum().item())
+            dormant_count = float(dormant_mask.sum().item())
             total_neurons += layer_size
             total_dead += dead_count
+            total_dormant += dormant_count
+            # Strict threshold (paper logging; often 0 with ELU + normalized scores).
             log_dict[f"redo/dead_percentage/{spec.name}"] = (dead_count / layer_size) * 100.0 if layer_size else 0.0
             log_dict[f"redo/dead_count/{spec.name}"] = dead_count
+            # Relative dormancy: lowest-scoring fraction that ReDo would recycle now.
+            log_dict[f"redo/dormant_percentage/{spec.name}"] = (dormant_count / layer_size) * 100.0 if layer_size else 0.0
+            log_dict[f"redo/dormant_count/{spec.name}"] = dormant_count
+            log_dict[f"redo/score_min/{spec.name}"] = float(score.min().item())
+            log_dict[f"redo/score_median/{spec.name}"] = float(score.median().item())
 
         if total_neurons > 0:
             log_dict["redo/dead_percentage/total"] = (total_dead / total_neurons) * 100.0
             log_dict["redo/dead_count/total"] = total_dead
+            log_dict["redo/dormant_percentage/total"] = (total_dormant / total_neurons) * 100.0
+            log_dict["redo/dormant_count/total"] = total_dormant
 
         if self._prev_neuron_score is not None:
             for name, score in current_scores.items():

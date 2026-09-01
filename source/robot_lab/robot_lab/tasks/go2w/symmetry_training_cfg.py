@@ -150,9 +150,10 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
 
 @configclass
 class Go2WSparseMoeCtsActorCriticCfg(RslRlMoeCtsActorCriticCfg):
-    """Student MoE with top-2 sparse gating (six other experts inactive per forward)."""
+    """Student MoE with top-2 sparse gating (30 other experts inactive per forward)."""
 
-    gating_top_k = 2
+    expert_num = 32
+    gating_top_k = 4
 
 
 @configclass

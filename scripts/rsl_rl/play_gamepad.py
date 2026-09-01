@@ -16,15 +16,19 @@ Controls (F710 in X / Xbox mode):
 
 On episode termination, the robot is also reset in-place (not teleported back to the spawn origin).
 
-Required terrain selection (single block only, to save GPU memory):
+Required terrain selection for procedural-terrain tasks (single block only, to save GPU memory):
     --terrain_type NAME --terrain_level N
     Play generates one 1x1 terrain patch of NAME at difficulty matching curriculum row N.
     Level N is 0-based (0 .. num_rows-1). Robot spawns at that patch's center.
+
+Flat-plane tasks (e.g. RobotLab-Go2W-Symmetry-v1) do not use a terrain generator;
+--terrain_type and --terrain_level are ignored.
 
 Example:
     python scripts/rsl_rl/play_gamepad.py --task=RobotLab-Go2W-D435i-v0 --terrain_type stairs_up --terrain_level 5
     python scripts/rsl_rl/play_gamepad.py --task=RobotLab-Go2-v0 --terrain_type flat --terrain_level 0 \\
         --lin_vel_x 1.5 --lin_vel_y 0.8 --ang_vel_z 1.2
+    python scripts/rsl_rl/play_gamepad.py --task=RobotLab-Go2W-Symmetry-v1
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -338,6 +342,16 @@ def _terrain_generator_cfg(env_cfg: ManagerBasedRLEnvCfg):
     return terrain_importer_cfg, terrain_gen_cfg
 
 
+def _uses_procedural_terrain(env_cfg: ManagerBasedRLEnvCfg) -> bool:
+    """True when play must pick a single sub-terrain block (--terrain_type / --terrain_level)."""
+    terrain_importer_cfg, terrain_gen_cfg = _terrain_generator_cfg(env_cfg)
+    if terrain_gen_cfg is None or terrain_gen_cfg.sub_terrains is None:
+        return False
+    if terrain_importer_cfg is not None and getattr(terrain_importer_cfg, "terrain_type", None) == "plane":
+        return False
+    return True
+
+
 def _list_terrain_types(env_cfg: ManagerBasedRLEnvCfg) -> list[str]:
     """All configured sub-terrain names, including zero-proportion types."""
     _, terrain_gen_cfg = _terrain_generator_cfg(env_cfg)
@@ -552,8 +566,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if hasattr(env_cfg.curriculum, "terrain_levels"):
             env_cfg.curriculum.terrain_levels = None
 
-    _validate_terrain_cli(env_cfg)
-    _configure_single_terrain_block(env_cfg, args_cli.terrain_type, args_cli.terrain_level)
+    uses_procedural_terrain = _uses_procedural_terrain(env_cfg)
+    if uses_procedural_terrain:
+        _validate_terrain_cli(env_cfg)
+        _configure_single_terrain_block(env_cfg, args_cli.terrain_type, args_cli.terrain_level)
+    else:
+        print("[INFO] Flat / non-procedural terrain: --terrain_type and --terrain_level are not required.")
 
     # camera follow is handled manually each step (heading-aware); keep VCC in world mode
     env_cfg.viewer.origin_type = "world"
@@ -590,8 +608,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    with torch.inference_mode():
-        _spawn_at_single_terrain_center(env, args_cli.terrain_type, args_cli.terrain_level)
+    if uses_procedural_terrain:
+        with torch.inference_mode():
+            _spawn_at_single_terrain_center(env, args_cli.terrain_type, args_cli.terrain_level)
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     if agent_cfg.class_name == "OnPolicyRunner":
