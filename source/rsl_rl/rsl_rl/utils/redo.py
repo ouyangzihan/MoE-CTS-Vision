@@ -113,6 +113,13 @@ def reset_adam_state(state: dict[str, torch.Tensor], mask: torch.Tensor | None) 
             state[key] = state[key] * (1.0 - mask)
 
 
+def _broadcast_neuron_mask(mask: torch.Tensor, param: torch.Tensor, neuron_axis: int) -> torch.Tensor:
+    """Broadcast a 1D neuron mask to match *param* along *neuron_axis*."""
+    view_shape = [1] * param.ndim
+    view_shape[neuron_axis] = mask.numel()
+    return mask.reshape(*view_shape).expand(*param.shape)
+
+
 def create_mask_helper(
     neuron_mask: torch.Tensor,
     current_param: torch.Tensor,
@@ -120,27 +127,27 @@ def create_mask_helper(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build incoming/outgoing weight masks from a 1D neuron mask."""
     if current_param.ndim == 2:
-        in_axes = (0,)
-        out_axes = (1,)
         if current_param.shape[0] > neuron_mask.shape[0]:
             repeat = int(current_param.shape[0] / neuron_mask.shape[0])
             neuron_mask = neuron_mask.repeat_interleave(repeat)
+        elif neuron_mask.shape[0] > current_param.shape[0]:
+            # e.g. CatELU doubles the activation width relative to linear out_features.
+            ratio = int(neuron_mask.shape[0] / current_param.shape[0])
+            neuron_mask = neuron_mask.reshape(current_param.shape[0], ratio).max(dim=1).values
+        incoming_mask = _broadcast_neuron_mask(neuron_mask, current_param, neuron_axis=0)
+        outgoing_mask = _broadcast_neuron_mask(neuron_mask, next_param, neuron_axis=1)
     elif current_param.ndim == 4:
-        in_axes = (0, 2, 3)
-        out_axes = (1, 2, 3)
+        if current_param.shape[0] > neuron_mask.shape[0]:
+            repeat = int(current_param.shape[0] / neuron_mask.shape[0])
+            neuron_mask = neuron_mask.repeat_interleave(repeat)
+        elif neuron_mask.shape[0] > current_param.shape[0]:
+            ratio = int(neuron_mask.shape[0] / current_param.shape[0])
+            neuron_mask = neuron_mask.reshape(current_param.shape[0], ratio).max(dim=1).values
+        incoming_mask = _broadcast_neuron_mask(neuron_mask, current_param, neuron_axis=0)
+        outgoing_mask = _broadcast_neuron_mask(neuron_mask, next_param, neuron_axis=1)
     else:
         raise ValueError(f"Unsupported parameter rank for ReDo: {current_param.ndim}")
 
-    def _expand(mask: torch.Tensor, param: torch.Tensor, axes: tuple[int, ...]) -> torch.Tensor:
-        expanded = mask
-        for axis in axes:
-            expanded = expanded.unsqueeze(axis)
-        for axis in axes:
-            expanded = expanded.repeat_interleave(param.shape[axis], dim=axis)
-        return expanded
-
-    incoming_mask = _expand(neuron_mask, current_param, in_axes)
-    outgoing_mask = _expand(neuron_mask, next_param, out_axes)
     return incoming_mask, outgoing_mask
 
 

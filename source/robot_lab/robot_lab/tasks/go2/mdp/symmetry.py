@@ -182,21 +182,34 @@ class Go2SymmetryMapper:
         return value.reshape(*value.shape[:-1], nx, ny).flip(-1).reshape_as(value)
 
     def reverse_depth_image(self, cfg, value: torch.Tensor) -> torch.Tensor:
-        """Horizontally flip a flattened depth image."""
+        """Horizontally flip a flattened depth image (single- or multi-frame)."""
         image_shape = None
+        num_output_frames = 1
         params = getattr(cfg, "params", {})
         if isinstance(params, dict):
             image_shape = params.get("image_shape") or params.get("crop_size")
+            num_output_frames = int(params.get("num_output_frames", 1))
         if image_shape is None:
             side = math.isqrt(value.shape[-1])
-            if side * side != value.shape[-1]:
+            if side * side == value.shape[-1]:
+                image_shape = (side, side)
+            elif value.shape[-1] % (60 * 60) == 0:
+                num_output_frames = value.shape[-1] // (60 * 60)
+                image_shape = (60, 60)
+            else:
                 return value
-            image_shape = (side, side)
 
         height, width = image_shape
-        if height * width != value.shape[-1]:
+        frame_pixels = height * width
+        if frame_pixels * num_output_frames != value.shape[-1]:
             return value
-        return value.reshape(*value.shape[:-1], height, width).flip(-1).reshape_as(value)
+        if num_output_frames == 1:
+            return value.reshape(*value.shape[:-1], height, width).flip(-1).reshape_as(value)
+        return (
+            value.reshape(*value.shape[:-1], num_output_frames, height, width)
+            .flip(-1)
+            .reshape_as(value)
+        )
 
     def reverse_term(self, name: str, cfg, value: torch.Tensor) -> torch.Tensor:
         """Mirror one observation term according to its semantic name.

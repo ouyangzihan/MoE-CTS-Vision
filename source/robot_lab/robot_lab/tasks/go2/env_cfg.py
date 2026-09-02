@@ -46,8 +46,13 @@ D435I_HORIZONTAL_FOV_DEG = 87.0
 D435I_VERTICAL_FOV_DEG = 58.0
 D435I_FOV_RANDOMIZATION_DEG = 3.0
 D435I_PRINCIPAL_POINT_RANDOMIZATION_PX = 1.0
-D435I_DEPTH_MAX = 10.0
+D435I_DEPTH_MAX = 2.5
 D435I_DEPTH_IMAGE_SHAPE = (D435I_DEPTH_HEIGHT, D435I_DEPTH_WIDTH)
+D435I_GAUSSIAN_BLUR_SIGMA = 1.0
+D435I_GAUSSIAN_BLUR_KERNEL_SIZE = 3
+D435I_DEPTH_NUM_OUTPUT_FRAMES = 4
+D435I_DEPTH_HISTORY_SKIP_FRAMES = 5
+D435I_DEPTH_HISTORY_LENGTH = (D435I_DEPTH_NUM_OUTPUT_FRAMES - 1) * D435I_DEPTH_HISTORY_SKIP_FRAMES + 1
 D435I_CAMERA_UPDATE_HZ = 50.0
 D435I_CAMERA_UPDATE_PERIOD = 1.0 / D435I_CAMERA_UPDATE_HZ
 # Depth age in sensor frames @ 50 Hz (1 frame = 20 ms) → 20–60 ms.
@@ -157,6 +162,16 @@ class Go2D435iSceneCfg(Go2SceneCfg):
         principal_point_jitter=D435I_PRINCIPAL_POINT_RANDOMIZATION_PX,
         randomize_intrinsics_on_reset=False,
         depth_clipping_behavior="max",
+        depth_norm_max=D435I_DEPTH_MAX,
+        depth_normalize=True,
+        gaussian_blur_sigma=D435I_GAUSSIAN_BLUR_SIGMA,
+        gaussian_blur_kernel_size=D435I_GAUSSIAN_BLUR_KERNEL_SIZE,
+        enable_sensor_noise=True,
+        sensor_noise_std=0.02,
+        sensor_dropout_prob=0.2,
+        depth_history_length=D435I_DEPTH_HISTORY_LENGTH,
+        depth_num_output_frames=D435I_DEPTH_NUM_OUTPUT_FRAMES,
+        depth_history_skip_frames=D435I_DEPTH_HISTORY_SKIP_FRAMES,
         pattern_cfg=patterns.PinholeCameraPatternCfg.from_intrinsic_matrix(
             intrinsic_matrix=[
                 D435I_INTRINSIC_WIDTH / (2.0 * math.tan(math.radians(D435I_HORIZONTAL_FOV_DEG) / 2.0)),
@@ -338,11 +353,10 @@ class D435iObservationsCfg(ObservationsCfg):
                 "data_type": "distance_to_image_plane",
                 "image_shape": D435I_DEPTH_IMAGE_SHAPE,
                 "max_depth": D435I_DEPTH_MAX,
-                "normalize": True,
+                "normalize": False,
                 "use_delay": True,
-                "enable_noise": True,
-                "noise_std": 0.02,
-                "dropout_prob": 0.2,
+                "use_history_stack": True,
+                "num_output_frames": D435I_DEPTH_NUM_OUTPUT_FRAMES,
             },
             clip=(0.0, 5.0),
             scale=0.5,

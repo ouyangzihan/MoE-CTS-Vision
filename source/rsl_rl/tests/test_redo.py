@@ -36,6 +36,19 @@ def test_create_mask_helper_for_linear_layers():
     assert incoming[1].unique().tolist() == [0.0]
     assert outgoing[:, 0].unique().tolist() == [1.0]
     assert outgoing[:, 2].unique().tolist() == [1.0]
+    weight_reinit_random(current.weight.data, incoming)
+    weight_reinit_random(nxt.weight.data, outgoing)
+
+
+def test_create_mask_helper_for_actor_like_layer():
+    current = nn.Linear(85, 512)
+    nxt = nn.Linear(512, 256)
+    neuron_mask = torch.tensor([1.0, 0.0] + [0.5] * 510)
+    incoming, outgoing = create_mask_helper(neuron_mask, current.weight, nxt.weight)
+    assert incoming.shape == current.weight.shape
+    assert outgoing.shape == nxt.weight.shape
+    weight_reinit_random(current.weight.data, incoming)
+    weight_reinit_random(nxt.weight.data, outgoing)
 
 
 def test_discover_mlp_recycle_layers_skips_output_layer():

@@ -159,13 +159,19 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         if getattr(self.curriculum, "wheels_not_in_contact", None) is not None:
             self.curriculum.wheels_not_in_contact = None
 
+        # Flat plane has no procedural terrain columns; gate stand-still scale on command only.
+        for term_name in ("hip_pos_penalty_l1", "joint_pos_penalty_l1"):
+            term = getattr(self.rewards, term_name, None)
+            if term is not None:
+                term.params["require_flat_terrain"] = False
+
 
 @configclass
 class Go2WSparseMoeCtsActorCriticCfg(RslRlMoeCtsActorCriticCfg):
     """Student MoE with top-2 sparse gating (30 other experts inactive per forward)."""
 
-    expert_num = 32
-    gating_top_k = 4
+    expert_num = 12
+    gating_top_k = 3
 
 
 @configclass

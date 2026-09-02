@@ -35,6 +35,7 @@ class DepthCNNGRUEncoder(nn.Module):
         gru_hidden_dim: int = 225,
         gru_num_layers: int = 1,
         activation: str = "elu",
+        depth_num_frames: int = 1,
         enable_depth_aux: bool = False,
         height_map_shape: tuple[int, int] = (17, 11),
         align_dim: int = 32,
@@ -44,7 +45,7 @@ class DepthCNNGRUEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.image_shape = tuple(image_shape)
-        self.in_channels = in_channels
+        self.in_channels = max(int(depth_num_frames), 1)
         self.pooled_shape = tuple(pooled_shape)
         self.cnn_channels = tuple(cnn_channels)
         self.cnn_feature_dim = self.pooled_shape[0] * self.pooled_shape[1]
@@ -59,7 +60,7 @@ class DepthCNNGRUEncoder(nn.Module):
 
         act = nn.ELU if activation == "elu" else nn.ReLU
         layers: list[nn.Module] = []
-        last_channels = in_channels
+        last_channels = self.in_channels
         for channels in cnn_channels:
             layers.extend(
                 [
@@ -122,7 +123,10 @@ class DepthCNNGRUEncoder(nn.Module):
 
     def _format_image(self, image: torch.Tensor) -> torch.Tensor:
         if image.ndim == 2:
-            image = image.reshape(image.shape[0], self.in_channels, *self.image_shape)
+            if self.in_channels > 1:
+                image = image.reshape(image.shape[0], self.in_channels, *self.image_shape)
+            else:
+                image = image.reshape(image.shape[0], self.in_channels, *self.image_shape)
         elif image.ndim == 3:
             image = image.reshape(image.shape[0] * image.shape[1], self.in_channels, *self.image_shape)
         elif image.ndim == 4:
@@ -234,6 +238,7 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         cnn_pooled_shape: tuple[int, int] = (15, 15),
         gru_hidden_dim: int = 225,
         gru_num_layers: int = 1,
+        depth_num_frames: int = 1,
         enable_depth_aux: bool = False,
         height_map_shape: tuple[int, int] = (17, 11),
         depth_align_dim: int = 32,
@@ -282,7 +287,7 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
 
         self.student_cnn_gru = DepthCNNGRUEncoder(
             image_shape=self.image_shape,
-            in_channels=self._image_channels(obs, self.actor_image_obs_groups),
+            depth_num_frames=depth_num_frames,
             cnn_channels=tuple(cnn_channels),
             kernel_size=cnn_kernel_size,
             stride=cnn_stride,
@@ -371,6 +376,8 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
             elif len(value.shape) == 2:
                 side = math.isqrt(value.shape[-1])
                 if side * side == value.shape[-1] and ("depth" in group or "image" in group):
+                    inferred.append(group)
+                elif ("depth" in group or "image" in group) and value.shape[-1] % (60 * 60) == 0:
                     inferred.append(group)
         return inferred
 

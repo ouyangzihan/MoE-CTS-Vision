@@ -51,8 +51,13 @@ D435I_HORIZONTAL_FOV_DEG = 87.0
 D435I_VERTICAL_FOV_DEG = 58.0
 D435I_FOV_RANDOMIZATION_DEG = 3.0
 D435I_PRINCIPAL_POINT_RANDOMIZATION_PX = 1.0
-D435I_DEPTH_MAX = 10.0
+D435I_DEPTH_MAX = 2.5
 D435I_DEPTH_IMAGE_SHAPE = (D435I_DEPTH_HEIGHT, D435I_DEPTH_WIDTH)
+D435I_GAUSSIAN_BLUR_SIGMA = 1.0
+D435I_GAUSSIAN_BLUR_KERNEL_SIZE = 3
+D435I_DEPTH_NUM_OUTPUT_FRAMES = 4
+D435I_DEPTH_HISTORY_SKIP_FRAMES = 5
+D435I_DEPTH_HISTORY_LENGTH = (D435I_DEPTH_NUM_OUTPUT_FRAMES - 1) * D435I_DEPTH_HISTORY_SKIP_FRAMES + 1
 D435I_CAMERA_UPDATE_HZ = 50.0
 D435I_CAMERA_UPDATE_PERIOD = 1.0 / D435I_CAMERA_UPDATE_HZ
 # Depth age in sensor frames @ 50 Hz (1 frame = 20 ms) → 20–60 ms.
@@ -179,6 +184,24 @@ class Go2WD435iSceneCfg(Go2WSceneCfg):
         rpy_randomization_deg=D435I_CAMERA_RPY_RANDOMIZATION_DEG,
         randomize_rot_on_reset=True,
         depth_clipping_behavior="max",
+        depth_norm_max=D435I_DEPTH_MAX,
+        depth_normalize=True,
+        gaussian_blur_sigma=D435I_GAUSSIAN_BLUR_SIGMA,
+        gaussian_blur_kernel_size=D435I_GAUSSIAN_BLUR_KERNEL_SIZE,
+        enable_sensor_noise=True,
+        use_env_cfg_noise_overrides=False,
+        sensor_noise_std=0.02,
+        sensor_dropout_prob=0.2,
+        sensor_depth_dependent_noise_scale=0.5,
+        sensor_edge_speckle_prob=0.04,
+        sensor_temporal_flicker_std=0.015,
+        sensor_hole_blob_prob=0.075,
+        sensor_hole_blob_size_range=(3, 12),
+        sensor_randomize_dropout_fill_value=True,
+        sensor_dropout_fill_value=None,
+        depth_history_length=D435I_DEPTH_HISTORY_LENGTH,
+        depth_num_output_frames=D435I_DEPTH_NUM_OUTPUT_FRAMES,
+        depth_history_skip_frames=D435I_DEPTH_HISTORY_SKIP_FRAMES,
         pattern_cfg=patterns.PinholeCameraPatternCfg.from_intrinsic_matrix(
             intrinsic_matrix=[
                 D435I_INTRINSIC_WIDTH / (2.0 * math.tan(math.radians(D435I_HORIZONTAL_FOV_DEG) / 2.0)),
@@ -556,22 +579,10 @@ class D435iObservationsCfg(ObservationsCfg):
                 "data_type": "distance_to_image_plane",
                 "image_shape": D435I_DEPTH_IMAGE_SHAPE,
                 "max_depth": D435I_DEPTH_MAX,
-                "normalize": True,
+                "normalize": False,
                 "use_delay": True,
-                "enable_noise": True,
-                "noise_std": 0.02,
-                "dropout_prob": 0.2,
-                # Extra depth artifacts for implicit robustness (used whenever enable_noise).
-                # Curriculum/runtime overrides still require use_cfg_noise_overrides=True.
-                "depth_dependent_noise_scale": 0.5,
-                "edge_speckle_prob": 0.04,
-                "temporal_flicker_std": 0.015,
-                "hole_blob_prob": 0.075,
-                "hole_blob_size_range": (3, 12),
-                "use_cfg_noise_overrides": False,
-                # Training: per-env 50/50 dropout fill as 0.0 (near) or far (legacy None).
-                "randomize_dropout_fill_value": True,
-                "dropout_fill_value": None,
+                "use_history_stack": True,
+                "num_output_frames": D435I_DEPTH_NUM_OUTPUT_FRAMES,
             },
             clip=(0.0, 5.0),
             scale=0.5,
@@ -594,7 +605,7 @@ class D435iObservationsCfg(ObservationsCfg):
                 "max_depth": D435I_DEPTH_MAX,
                 "normalize": True,
                 "use_delay": True,
-                "enable_noise": False,
+                "use_history_stack": False,
             },
             clip=(0.0, 5.0),
             scale=0.5,
@@ -1132,22 +1143,22 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
         re-running it, so play/train scripts must call this after overrides.
         """
         depth_term = self.observations.depth.depth_image
+        camera_cfg = self.scene.front_depth_camera
         if self.use_mgdp_depth_aux:
             self.observations.clean_depth = D435iObservationsCfg.CleanDepthCfg()
             self.observations.height_map = D435iObservationsCfg.HeightMapCfg()
-            depth_term.params["use_cfg_noise_overrides"] = True
-            depth_term.params["noise_std"] = self.depth_noise_std
-            depth_term.params["dropout_prob"] = self.depth_dropout_prob
-            depth_term.params["depth_dependent_noise_scale"] = self.depth_dependent_noise_scale
-            depth_term.params["edge_speckle_prob"] = self.depth_edge_speckle_prob
-            depth_term.params["temporal_flicker_std"] = self.depth_temporal_flicker_std
-            depth_term.params["hole_blob_prob"] = self.depth_hole_blob_prob
-            depth_term.params["hole_blob_size_range"] = self.depth_hole_blob_size_range
-            # Match MGDP: dropout → 0 unless user overrides.
+            camera_cfg.use_env_cfg_noise_overrides = True
+            camera_cfg.sensor_noise_std = self.depth_noise_std
+            camera_cfg.sensor_dropout_prob = self.depth_dropout_prob
+            camera_cfg.sensor_depth_dependent_noise_scale = self.depth_dependent_noise_scale
+            camera_cfg.sensor_edge_speckle_prob = self.depth_edge_speckle_prob
+            camera_cfg.sensor_temporal_flicker_std = self.depth_temporal_flicker_std
+            camera_cfg.sensor_hole_blob_prob = self.depth_hole_blob_prob
+            camera_cfg.sensor_hole_blob_size_range = self.depth_hole_blob_size_range
             if self.depth_dropout_fill_value is None:
                 self.depth_dropout_fill_value = 0.0
-            depth_term.params["randomize_dropout_fill_value"] = False
-            depth_term.params["dropout_fill_value"] = self.depth_dropout_fill_value
+            camera_cfg.sensor_randomize_dropout_fill_value = False
+            camera_cfg.sensor_dropout_fill_value = self.depth_dropout_fill_value
             self.curriculum.depth_noise = CurrTerm(
                 func=mdp.depth_noise_curriculum,
                 params={
@@ -1163,15 +1174,15 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
                 },
             )
         else:
-            # Keep ObsTerm noise params as authored (including MGDP-style extras).
-            # Only disable aux heads / curriculum / runtime cfg overrides.
             self.observations.clean_depth = None
             self.observations.height_map = None
-            depth_term.params["use_cfg_noise_overrides"] = False
-            depth_term.params["randomize_dropout_fill_value"] = True
-            depth_term.params["dropout_fill_value"] = None
+            if camera_cfg is not None:
+                camera_cfg.use_env_cfg_noise_overrides = False
+                camera_cfg.sensor_randomize_dropout_fill_value = True
+                camera_cfg.sensor_dropout_fill_value = None
             if getattr(self.curriculum, "depth_noise", None) is not None:
                 self.curriculum.depth_noise = None
+        del depth_term
 
     def __post_init__(self):
         super().__post_init__()

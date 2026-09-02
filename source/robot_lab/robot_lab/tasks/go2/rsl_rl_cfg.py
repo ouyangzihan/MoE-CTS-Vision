@@ -57,6 +57,7 @@ class RslRlMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsActorCriticCfg):
     class_name = "ActorCriticMoECTSCNNGRU"
     actor_image_obs_groups = ["depth"]
     image_shape = (60, 60)
+    depth_num_frames = 4
     cnn_channels = (16, 32, 64)
     cnn_kernel_size = 3
     cnn_stride = 2

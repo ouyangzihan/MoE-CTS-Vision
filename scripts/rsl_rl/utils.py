@@ -286,7 +286,7 @@ def export_cts_cnn_gru_policy_as_jit(
     """Export recurrent MoE-CTS CNN-GRU (D435i) student to TorchScript.
 
     Deploy interface (matches rl_sar moe_cts_d435i InferActions):
-      forward(single_obs[1,53], depth[1,3600]) -> actions[1,16]
+      forward(single_obs[1,53], depth[1,T*3600]) -> actions[1,16]
     Internal: term-major proprio history + GRU hidden state.
     """
     exporter = _TorchCNNGRUPolicyExporter(policy, actor_obs_normalizer, single_obs_normalizer)
@@ -326,7 +326,8 @@ class _TorchCNNGRUPolicyExporter(torch.nn.Module):
 
         self.image_h = int(policy.student_cnn_gru.image_shape[0])
         self.image_w = int(policy.student_cnn_gru.image_shape[1])
-        self.depth_dim = self.image_h * self.image_w
+        self.depth_num_frames = int(getattr(policy.student_cnn_gru, "in_channels", 1))
+        self.depth_dim = self.depth_num_frames * self.image_h * self.image_w
         self.gru_hidden_dim = int(policy.student_cnn_gru.hidden_dim)
         self.gru_num_layers = int(policy.student_cnn_gru.num_layers)
         self.cnn_feature_dim = int(policy.student_cnn_gru.cnn_feature_dim)
@@ -363,8 +364,8 @@ class _TorchCNNGRUPolicyExporter(torch.nn.Module):
         return self.obs_history
 
     def _encode_depth(self, depth: torch.Tensor) -> torch.Tensor:
-        # depth: [1, H*W] meters already preprocessed like training obs (normalize+scale applied in C++)
-        image = depth.reshape(1, 1, self.image_h, self.image_w)
+        # depth: [1, T*H*W] preprocessed like training obs (normalize+scale applied in deploy)
+        image = depth.reshape(1, self.depth_num_frames, self.image_h, self.image_w)
         x = self.cnn(image)
         x = self.avgpool(x)
         features = x.mean(dim=1).flatten(1)  # [1, cnn_feature_dim]

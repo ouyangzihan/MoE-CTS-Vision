@@ -123,6 +123,7 @@ def joint_pos_penalty_l1(
     asset_cfg: SceneEntityCfg,
     stand_still_scale: float,
     stand_cmd_idxs: list[int] = [0, 1, 2],
+    require_flat_terrain: bool = True,
 ) -> torch.Tensor:
     """Penalize joint position error from default on the articulation."""
     # extract the used quantities (to enable type-hinting)
@@ -131,9 +132,12 @@ def joint_pos_penalty_l1(
     running_reward = torch.linalg.norm(
         (asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]), dim=1, ord=1
     )
-    flat_mask = is_robot_on_terrain(env, 'flat', asset_cfg.name)
+    stand_still_mask = cmd < 0.001
+
+    if require_flat_terrain:
+        stand_still_mask = torch.logical_and(stand_still_mask, is_robot_on_terrain(env, "flat", asset_cfg.name))
     reward = torch.where(
-        torch.logical_and(cmd < 1e-3, flat_mask),
+        stand_still_mask,
         stand_still_scale * running_reward,
         running_reward,
     )

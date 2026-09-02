@@ -408,8 +408,8 @@ def depth_noise_curriculum(
 ) -> dict[str, float]:
     """Ramp depth-image corruption severity for MGDP-style outdoor robustness.
 
-    Writes the scheduled values onto ``env.cfg`` fields consumed by
-    ``process_depth_image(..., use_cfg_noise_overrides=True)``.
+    Writes the scheduled values onto ``env.cfg`` fields consumed by the
+    front depth camera sensor (``use_env_cfg_noise_overrides=True``).
     """
     del env_ids  # curriculum applies globally
     current_it = env.common_step_counter // max(int(num_steps_per_iter), 1)
@@ -430,6 +430,11 @@ def depth_noise_curriculum(
         temporal_flicker_std_range[0], temporal_flicker_std_range[1], alpha
     )
     env.cfg.depth_hole_blob_prob = _lerp(hole_blob_prob_range[0], hole_blob_prob_range[1], alpha)
+
+    camera = env.scene.sensors.get("front_depth_camera")
+    if camera is not None and hasattr(camera, "sync_noise_from_env_cfg"):
+        camera.bind_env_cfg(env.cfg)
+        camera.sync_noise_from_env_cfg(env.cfg)
 
     return {
         "noise_std": env.cfg.depth_noise_std,
