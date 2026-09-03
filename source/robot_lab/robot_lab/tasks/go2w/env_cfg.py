@@ -68,7 +68,7 @@ D435I_CAMERA_MAX_DELAY = D435I_CAMERA_MAX_DELAY_FRAMES * D435I_CAMERA_UPDATE_PER
 D435I_CAMERA_POS_BASE = (0.3264636, -0.00003, 0.0947706)
 D435I_CAMERA_POS_RANDOMIZATION_M = 0.01
 D435I_CAMERA_ROT_BASE = (0.9612616959383189, 0.0, 0.27563735581699916, 0.0)
-D435I_CAMERA_RPY_RANDOMIZATION_DEG = 5.0
+D435I_CAMERA_RPY_RANDOMIZATION_DEG = 3.0
 
 LEG_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES, preserve_order=True)
 WHEEL_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES, preserve_order=True)
@@ -190,12 +190,12 @@ class Go2WD435iSceneCfg(Go2WSceneCfg):
         gaussian_blur_kernel_size=D435I_GAUSSIAN_BLUR_KERNEL_SIZE,
         enable_sensor_noise=True,
         use_env_cfg_noise_overrides=False,
-        sensor_noise_std=0.02,
-        sensor_dropout_prob=0.2,
-        sensor_depth_dependent_noise_scale=0.5,
-        sensor_edge_speckle_prob=0.04,
-        sensor_temporal_flicker_std=0.015,
-        sensor_hole_blob_prob=0.075,
+        sensor_noise_std= 0, # 0.02,
+        sensor_dropout_prob= 0, # 0.2,
+        sensor_depth_dependent_noise_scale= 0, # 0.5,
+        sensor_edge_speckle_prob= 0, # 0.04,
+        sensor_temporal_flicker_std= 0, # 0.015,
+        sensor_hole_blob_prob= 0, # 0.075,
         sensor_hole_blob_size_range=(3, 12),
         sensor_randomize_dropout_fill_value=True,
         sensor_dropout_fill_value=None,
@@ -989,6 +989,16 @@ class CurriculumCfg:
             "term_name": "wheel_lateral_drag",
             "initial_weight": -0.0,
             "final_weight": -0.08,
+            "start_it": 0,
+            "end_it": 5000,
+        },
+    )
+    feet_regulation = CurrTerm(
+        mdp.gradual_reward_weight_modification,
+        params={
+            "term_name": "feet_regulation",
+            "initial_weight": -0.0,
+            "final_weight": -0.0,
             "start_it": 0,
             "end_it": 5000,
         },

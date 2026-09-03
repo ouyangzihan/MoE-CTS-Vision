@@ -238,6 +238,14 @@ def pyramid_stairs_random_width_terrain(difficulty: float, cfg) -> np.ndarray:
         cfg.step_width = original_step_width
 
 
+@height_field_to_mesh
+def rough_pyramid_stairs_random_width_terrain(difficulty: float, cfg) -> np.ndarray:
+    """Random-width pyramid stairs plus random uniform roughness."""
+    stairs = pyramid_stairs_random_width_terrain.__wrapped__(difficulty, cfg)
+    rough = hf_terrains.random_uniform_terrain.__wrapped__(difficulty, cfg)
+    return np.rint(stairs + rough).astype(np.int16)
+
+
 @configclass
 class WaveTerrainCfg(terrain_gen.HfWaveTerrainCfg):
     function = wave_terrain
@@ -269,6 +277,20 @@ class RandomWidthPyramidStairsTerrainCfg(terrain_gen.HfPyramidStairsTerrainCfg):
 
 @configclass
 class RandomWidthInvertedPyramidStairsTerrainCfg(RandomWidthPyramidStairsTerrainCfg):
+    inverted: bool = True
+
+
+@configclass
+class RoughRandomWidthPyramidStairsTerrainCfg(RandomWidthPyramidStairsTerrainCfg):
+    function = rough_pyramid_stairs_random_width_terrain
+    # ±1.5 cm surface roughness on stair treads/risers.
+    noise_range: tuple[float, float] = (-0.015, 0.015)
+    noise_step: float = 0.005
+    downsampled_scale: float = 0.2
+
+
+@configclass
+class RoughRandomWidthInvertedPyramidStairsTerrainCfg(RoughRandomWidthPyramidStairsTerrainCfg):
     inverted: bool = True
 
 
@@ -315,7 +337,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
             10.0,  # effectively disable slope correction for rough_slope terrain
         ),
         "stairs_up": with_slope_threshold(
-            RandomWidthInvertedPyramidStairsTerrainCfg(
+            RoughRandomWidthInvertedPyramidStairsTerrainCfg(
                 proportion=0.65,
                 # Baked mesh range. go2w curriculum raises effective lower bound via min terrain level.
                 step_height_range=(0., 0.2),
@@ -325,7 +347,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
             0.25,  # ~14 deg slope correction recommended for stairs
         ),
         "stairs_down": with_slope_threshold(
-            RandomWidthPyramidStairsTerrainCfg(
+            RoughRandomWidthPyramidStairsTerrainCfg(
                 proportion=0.05,
                 step_height_range=(0., 0.2),
                 step_width_range=(0.29, 0.34),

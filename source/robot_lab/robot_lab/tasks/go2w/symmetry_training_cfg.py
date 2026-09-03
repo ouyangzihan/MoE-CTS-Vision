@@ -207,6 +207,7 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         self.rewards.wheels_not_in_contact = None
         self.rewards.local_terrain_tilt_angle = None
         self.rewards.base_tilt_angle.weight = -0.2
+        # self.rewards.feet_regulation.weight = -0.05
         if getattr(self.curriculum, "terrain_level_progress", None) is not None:
             self.curriculum.terrain_level_progress = None
         if getattr(self.curriculum, "local_terrain_tilt_angle", None) is not None:

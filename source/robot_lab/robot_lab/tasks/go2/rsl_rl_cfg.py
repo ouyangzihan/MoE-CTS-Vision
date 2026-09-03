@@ -79,10 +79,10 @@ class RslRlRedoCfg:
     """Recycling Dormant Neurons (ReDo) hyperparameters."""
 
     enabled = False
-    reset_period = 10_000  # 200_000 # gradient steps between recycle events
+    reset_period = 100_000  # 200_000 # gradient steps between recycle events
     reset_start_step = 0
     reset_end_step = 2_500_000
-    logging_period = 1_000 # 20_000
+    logging_period = 10_000 # 20_000
     recycle_rate = 0.3
     score_type = "redo"  # redo | random | redo_inverted | threshold
     dead_neurons_threshold = 0.0
