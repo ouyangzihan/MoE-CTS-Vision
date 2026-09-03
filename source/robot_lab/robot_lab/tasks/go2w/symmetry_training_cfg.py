@@ -31,6 +31,8 @@ WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT = -30.0
 WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 4.0
 WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
 
+_WTW_FOOTSWING_HEIGHT_CMD = 0.07
+
 _WTW_GAIT_TIMING_PARAMS = {
     "gait_frequency": 1.5,
     "gait_phase": 0.5,
@@ -38,12 +40,25 @@ _WTW_GAIT_TIMING_PARAMS = {
     "gait_bound": 0.0,
     "gait_duration": 0.5,
     "kappa_gait_probs": 0.07,
+    "footswing_height_cmd": _WTW_FOOTSWING_HEIGHT_CMD,
 }
 
-# Disable WTW gait shaping on straight-line commands (vy=0 and yaw=0).
+# Used whenever both vy and yaw commands are ~0 (stand / straight-roll).
+_WTW_ZERO_VY_YAW_GAIT_TIMING_PARAMS = {
+    **_WTW_GAIT_TIMING_PARAMS,
+    "gait_frequency": 0.0,
+    "footswing_height_cmd": 0.0,
+}
+
+# Keep WTW rewards active at 0 commands; swap gait params instead of zeroing terms.
 _WTW_VY_YAW_GATE_PARAMS = {
     "command_name": "base_velocity",
-    "zero_when_vy_yaw_zero": True,
+    "zero_when_vy_yaw_zero": False,
+}
+
+_WTW_GAIT_SWITCH_PARAMS = {
+    "switch_gait_when_vy_yaw_zero": True,
+    **{f"zero_vy_yaw_{key}": value for key, value in _WTW_ZERO_VY_YAW_GAIT_TIMING_PARAMS.items()},
 }
 
 
@@ -72,9 +87,42 @@ class Go2WFlatSceneCfg(Go2WSceneCfg):
     )
 
 
+def disable_stand_still_terrain_gate(rewards) -> None:
+    """Trigger ``stand_still_scale`` from command only (no procedural ``flat`` column)."""
+    for term_name in ("hip_pos_penalty_l1", "joint_pos_penalty_l1"):
+        term = getattr(rewards, term_name, None)
+        if term is not None:
+            term.params["require_flat_terrain"] = False
+
+
 @configclass
 class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
     """Base Go2W rewards plus WTW augmented auxiliary terms."""
+
+    # Plane terrain has no generator columns; bake the flag into static params so Hydra
+    # ``to_dict`` / ``from_dict`` cannot fall back to the function default (True).
+    hip_pos_penalty_l1 = RewTerm(
+        func=mdp.joint_pos_penalty_l1,
+        weight=-0.04,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
+            "stand_still_scale": 10.0,
+            "stand_cmd_idxs": [0, 1],
+            "require_flat_terrain": False,
+        },
+    )
+    joint_pos_penalty_l1 = RewTerm(
+        func=mdp.joint_pos_penalty_l1,
+        weight=-0.008,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
+            "stand_still_scale": 10.0,
+            "stand_cmd_idxs": [0, 1],
+            "require_flat_terrain": False,
+        },
+    )
 
     wtw_jump = RewTerm(
         func=mdp.wtw_jump,
@@ -98,16 +146,17 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
             **_WTW_VY_YAW_GATE_PARAMS,
+            **_WTW_GAIT_SWITCH_PARAMS,
         },
     )
     wtw_feet_clearance_cmd_linear = RewTerm(
         func=mdp.wtw_feet_clearance_cmd_linear,
         weight=WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT,
         params={
-            "footswing_height_cmd": 0.07,
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
             **_WTW_VY_YAW_GATE_PARAMS,
+            **_WTW_GAIT_SWITCH_PARAMS,
         },
     )
     wtw_tracking_contacts_shaped_force = RewTerm(
@@ -118,6 +167,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
             **_WTW_VY_YAW_GATE_PARAMS,
+            **_WTW_GAIT_SWITCH_PARAMS,
         },
     )
     wtw_tracking_contacts_shaped_vel = RewTerm(
@@ -128,15 +178,20 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             **_WTW_GAIT_TIMING_PARAMS,
             **_WTW_VY_YAW_GATE_PARAMS,
+            **_WTW_GAIT_SWITCH_PARAMS,
         },
     )
+
+    def __post_init__(self):
+        super().__post_init__()
+        disable_stand_still_terrain_gate(self)
 
 
 @configclass
 class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
     """Blind Go2W symmetry training: flat plane + WTW augmented auxiliary rewards."""
 
-    scene: Go2WFlatSceneCfg = Go2WFlatSceneCfg(num_envs=8192, env_spacing=0.5)
+    scene: Go2WFlatSceneCfg = Go2WFlatSceneCfg(num_envs=4096, env_spacing=2.5)
     rewards: WalkTheseWaysSymmetryRewardsCfg = WalkTheseWaysSymmetryRewardsCfg()
 
     def __post_init__(self):
@@ -159,11 +214,11 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         if getattr(self.curriculum, "wheels_not_in_contact", None) is not None:
             self.curriculum.wheels_not_in_contact = None
 
-        # Flat plane has no procedural terrain columns; gate stand-still scale on command only.
-        for term_name in ("hip_pos_penalty_l1", "joint_pos_penalty_l1"):
-            term = getattr(self.rewards, term_name, None)
-            if term is not None:
-                term.params["require_flat_terrain"] = False
+        self.apply_stand_still_scale_without_terrain()
+
+    def apply_stand_still_scale_without_terrain(self) -> None:
+        """Re-apply after Hydra ``from_dict`` (same pattern as MGDP obs-group flags)."""
+        disable_stand_still_terrain_gate(self.rewards)
 
 
 @configclass

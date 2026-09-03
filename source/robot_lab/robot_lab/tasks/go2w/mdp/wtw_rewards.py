@@ -3,7 +3,8 @@
 Ports the six behavior-conditioned reward terms from
 ``Reference/walk-these-ways/.../go1_gym/envs/rewards/corl_rewards.py`` for Go2W.
 Gait timing uses fixed trotting defaults from the WTW training script unless
-overridden via reward-term params.
+overridden via reward-term params. When ``switch_gait_when_vy_yaw_zero`` is set,
+envs with both vy and yaw ~0 use the ``zero_vy_yaw_*`` gait targets instead.
 """
 
 from __future__ import annotations
@@ -27,6 +28,16 @@ class WalkTheseWaysGaitState:
     desired_contact_states: torch.Tensor
 
 
+_BEHAVIOR_OVERRIDE_KEYS = (
+    "gait_frequency",
+    "gait_phase",
+    "gait_offset",
+    "gait_bound",
+    "gait_duration",
+    "footswing_height_cmd",
+)
+
+
 def _gait_params_dict(
     gait_frequency: float,
     gait_phase: float,
@@ -34,7 +45,18 @@ def _gait_params_dict(
     gait_bound: float,
     gait_duration: float,
     kappa_gait_probs: float,
-) -> dict[str, float]:
+    command_name: str = "base_velocity",
+    command_threshold: float = 1e-3,
+    switch_gait_when_vy_yaw_zero: bool = False,
+    zero_vy_yaw_gait_frequency: float = 0.0,
+    zero_vy_yaw_gait_phase: float = 0.5,
+    zero_vy_yaw_gait_offset: float = 0.0,
+    zero_vy_yaw_gait_bound: float = 0.0,
+    zero_vy_yaw_gait_duration: float = 0.5,
+    zero_vy_yaw_kappa_gait_probs: float = 0.07,
+    footswing_height_cmd: float = 0.19,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
+) -> dict:
     return {
         "gait_frequency": gait_frequency,
         "gait_phase": gait_phase,
@@ -42,7 +64,33 @@ def _gait_params_dict(
         "gait_bound": gait_bound,
         "gait_duration": gait_duration,
         "kappa_gait_probs": kappa_gait_probs,
+        "command_name": command_name,
+        "command_threshold": command_threshold,
+        "switch_gait_when_vy_yaw_zero": switch_gait_when_vy_yaw_zero,
+        "zero_vy_yaw_gait_frequency": zero_vy_yaw_gait_frequency,
+        "zero_vy_yaw_gait_phase": zero_vy_yaw_gait_phase,
+        "zero_vy_yaw_gait_offset": zero_vy_yaw_gait_offset,
+        "zero_vy_yaw_gait_bound": zero_vy_yaw_gait_bound,
+        "zero_vy_yaw_gait_duration": zero_vy_yaw_gait_duration,
+        "zero_vy_yaw_kappa_gait_probs": zero_vy_yaw_kappa_gait_probs,
+        "footswing_height_cmd": footswing_height_cmd,
+        "zero_vy_yaw_footswing_height_cmd": zero_vy_yaw_footswing_height_cmd,
     }
+
+
+def _vy_yaw_command_active_mask(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    command_threshold: float = 1e-3,
+) -> torch.Tensor:
+    """True when lateral ``vy`` or yaw-rate command is non-zero."""
+    cmd = env.command_manager.get_command(command_name)
+    if cmd.shape[1] > 2:
+        vy = cmd[:, 1]
+    else:
+        vy = torch.zeros(env.num_envs, device=env.device)
+    yaw = cmd[:, -1]
+    return (vy.abs() > command_threshold) | (yaw.abs() > command_threshold)
 
 
 def _resolve_behavior_params(env: ManagerBasedRLEnv, params: dict) -> dict[str, torch.Tensor]:
@@ -63,13 +111,30 @@ def _resolve_behavior_params(env: ManagerBasedRLEnv, params: dict) -> dict[str, 
     for key, scalar_default in scalar_defaults.items():
         value = float(params.get(key, scalar_default))
         resolved[key] = torch.full((env.num_envs,), value, device=env.device)
+
+    if params.get("switch_gait_when_vy_yaw_zero", False):
+        stand_mask = ~_vy_yaw_command_active_mask(
+            env,
+            str(params.get("command_name", "base_velocity")),
+            float(params.get("command_threshold", 1e-3)),
+        )
+        for key in _BEHAVIOR_OVERRIDE_KEYS:
+            src = f"zero_vy_yaw_{key}"
+            if src not in params:
+                continue
+            override = torch.full((env.num_envs,), float(params[src]), device=env.device)
+            resolved[key] = torch.where(stand_mask, override, resolved[key])
     return resolved
 
 
 def _update_wtw_gait_state(env: ManagerBasedRLEnv, params: dict) -> WalkTheseWaysGaitState:
     """Update gait clocks once per env step (shared across WTW reward terms)."""
     step = int(env.common_step_counter)
-    if getattr(env, "_wtw_gait_last_step", -1) == step and hasattr(env, "_wtw_gait_state"):
+    if (
+        getattr(env, "_wtw_gait_last_step", -1) == step
+        and hasattr(env, "_wtw_gait_state")
+        and hasattr(env, "_wtw_behavior_params")
+    ):
         return env._wtw_gait_state
 
     behavior = _resolve_behavior_params(env, params)
@@ -127,23 +192,9 @@ def _update_wtw_gait_state(env: ManagerBasedRLEnv, params: dict) -> WalkTheseWay
         foot_indices=swing_phases,
         desired_contact_states=desired_contact_states,
     )
+    env._wtw_behavior_params = behavior
     env._wtw_gait_last_step = step
     return env._wtw_gait_state
-
-
-def _vy_yaw_command_active_mask(
-    env: ManagerBasedRLEnv,
-    command_name: str = "base_velocity",
-    command_threshold: float = 1e-3,
-) -> torch.Tensor:
-    """True when lateral ``vy`` or yaw-rate command is non-zero."""
-    cmd = env.command_manager.get_command(command_name)
-    if cmd.shape[1] > 2:
-        vy = cmd[:, 1]
-    else:
-        vy = torch.zeros(env.num_envs, device=env.device)
-    yaw = cmd[:, -1]
-    return (vy.abs() > command_threshold) | (yaw.abs() > command_threshold)
 
 
 def _apply_wtw_vy_yaw_gate(
@@ -210,6 +261,34 @@ def wtw_orientation_control(
     return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
+def _gait_switch_kwargs(
+    command_name: str,
+    command_threshold: float,
+    switch_gait_when_vy_yaw_zero: bool,
+    zero_vy_yaw_gait_frequency: float,
+    zero_vy_yaw_gait_phase: float,
+    zero_vy_yaw_gait_offset: float,
+    zero_vy_yaw_gait_bound: float,
+    zero_vy_yaw_gait_duration: float,
+    zero_vy_yaw_kappa_gait_probs: float,
+    footswing_height_cmd: float = 0.19,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
+) -> dict:
+    return {
+        "command_name": command_name,
+        "command_threshold": command_threshold,
+        "switch_gait_when_vy_yaw_zero": switch_gait_when_vy_yaw_zero,
+        "zero_vy_yaw_gait_frequency": zero_vy_yaw_gait_frequency,
+        "zero_vy_yaw_gait_phase": zero_vy_yaw_gait_phase,
+        "zero_vy_yaw_gait_offset": zero_vy_yaw_gait_offset,
+        "zero_vy_yaw_gait_bound": zero_vy_yaw_gait_bound,
+        "zero_vy_yaw_gait_duration": zero_vy_yaw_gait_duration,
+        "zero_vy_yaw_kappa_gait_probs": zero_vy_yaw_kappa_gait_probs,
+        "footswing_height_cmd": footswing_height_cmd,
+        "zero_vy_yaw_footswing_height_cmd": zero_vy_yaw_footswing_height_cmd,
+    }
+
+
 def wtw_raibert_heuristic(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -224,10 +303,37 @@ def wtw_raibert_heuristic(
     kappa_gait_probs: float = 0.07,
     zero_when_vy_yaw_zero: bool = False,
     command_threshold: float = 1e-3,
+    switch_gait_when_vy_yaw_zero: bool = False,
+    zero_vy_yaw_gait_frequency: float = 0.0,
+    zero_vy_yaw_gait_phase: float = 0.5,
+    zero_vy_yaw_gait_offset: float = 0.0,
+    zero_vy_yaw_gait_bound: float = 0.0,
+    zero_vy_yaw_gait_duration: float = 0.5,
+    zero_vy_yaw_kappa_gait_probs: float = 0.07,
+    footswing_height_cmd: float = 0.19,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
 ) -> torch.Tensor:
     """Raibert foot-placement heuristic (WTW ``raibert_heuristic``)."""
     gait_params = _gait_params_dict(
-        gait_frequency, gait_phase, gait_offset, gait_bound, gait_duration, kappa_gait_probs
+        gait_frequency,
+        gait_phase,
+        gait_offset,
+        gait_bound,
+        gait_duration,
+        kappa_gait_probs,
+        **_gait_switch_kwargs(
+            command_name,
+            command_threshold,
+            switch_gait_when_vy_yaw_zero,
+            zero_vy_yaw_gait_frequency,
+            zero_vy_yaw_gait_phase,
+            zero_vy_yaw_gait_offset,
+            zero_vy_yaw_gait_bound,
+            zero_vy_yaw_gait_duration,
+            zero_vy_yaw_kappa_gait_probs,
+            footswing_height_cmd,
+            zero_vy_yaw_footswing_height_cmd,
+        ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
     asset: Articulation = env.scene[asset_cfg.name]
@@ -245,14 +351,20 @@ def wtw_raibert_heuristic(
     cmd = env.command_manager.get_command(command_name)
     x_vel_des = cmd[:, 0:1]
     yaw_vel_des = cmd[:, 2:3] if cmd.shape[1] > 2 else cmd[:, 1:2]
-    behavior = _resolve_behavior_params(env, gait_params)
+    behavior = env._wtw_behavior_params
     frequencies = behavior["gait_frequency"].unsqueeze(1)
+    # Frequency 0 (stand / straight-roll gait) must not inflate Raibert lead.
+    step_period = torch.where(
+        frequencies > 1e-6,
+        0.5 / frequencies.clamp_min(1e-6),
+        torch.zeros_like(frequencies),
+    )
 
     phases = torch.abs(1.0 - gait.foot_indices * 2.0) * 1.0 - 0.5
     y_vel_des = yaw_vel_des * stance_length_cmd / 2.0
-    desired_ys_offset = phases * y_vel_des * (0.5 / frequencies.clamp_min(1e-6))
+    desired_ys_offset = phases * y_vel_des * step_period
     desired_ys_offset[:, 2:4] *= -1.0
-    desired_xs_offset = phases * x_vel_des * (0.5 / frequencies.clamp_min(1e-6))
+    desired_xs_offset = phases * x_vel_des * step_period
 
     desired_ys = desired_ys + desired_ys_offset
     desired_xs = desired_xs + desired_xs_offset
@@ -276,17 +388,43 @@ def wtw_feet_clearance_cmd_linear(
     command_name: str = "base_velocity",
     zero_when_vy_yaw_zero: bool = False,
     command_threshold: float = 1e-3,
+    switch_gait_when_vy_yaw_zero: bool = False,
+    zero_vy_yaw_gait_frequency: float = 0.0,
+    zero_vy_yaw_gait_phase: float = 0.5,
+    zero_vy_yaw_gait_offset: float = 0.0,
+    zero_vy_yaw_gait_bound: float = 0.0,
+    zero_vy_yaw_gait_duration: float = 0.5,
+    zero_vy_yaw_kappa_gait_probs: float = 0.07,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
 ) -> torch.Tensor:
     """Track commanded foot-swing height during swing (WTW ``feet_clearance_cmd_linear``)."""
     gait_params = _gait_params_dict(
-        gait_frequency, gait_phase, gait_offset, gait_bound, gait_duration, kappa_gait_probs
+        gait_frequency,
+        gait_phase,
+        gait_offset,
+        gait_bound,
+        gait_duration,
+        kappa_gait_probs,
+        **_gait_switch_kwargs(
+            command_name,
+            command_threshold,
+            switch_gait_when_vy_yaw_zero,
+            zero_vy_yaw_gait_frequency,
+            zero_vy_yaw_gait_phase,
+            zero_vy_yaw_gait_offset,
+            zero_vy_yaw_gait_bound,
+            zero_vy_yaw_gait_duration,
+            zero_vy_yaw_kappa_gait_probs,
+            footswing_height_cmd,
+            zero_vy_yaw_footswing_height_cmd,
+        ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
     asset: Articulation = env.scene[asset_cfg.name]
     foot_height = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
-    target_height = footswing_height_cmd + foot_radius
+    target_height = env._wtw_behavior_params["footswing_height_cmd"] + foot_radius
     swing_mask = 1.0 - gait.desired_contact_states
-    rew = torch.square(target_height - foot_height) * swing_mask
+    rew = torch.square(target_height.unsqueeze(1) - foot_height) * swing_mask
     reward = torch.sum(rew, dim=1)
     return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
@@ -304,12 +442,39 @@ def wtw_tracking_contacts_shaped_force(
     command_name: str = "base_velocity",
     zero_when_vy_yaw_zero: bool = False,
     command_threshold: float = 1e-3,
+    switch_gait_when_vy_yaw_zero: bool = False,
+    zero_vy_yaw_gait_frequency: float = 0.0,
+    zero_vy_yaw_gait_phase: float = 0.5,
+    zero_vy_yaw_gait_offset: float = 0.0,
+    zero_vy_yaw_gait_bound: float = 0.0,
+    zero_vy_yaw_gait_duration: float = 0.5,
+    zero_vy_yaw_kappa_gait_probs: float = 0.07,
+    footswing_height_cmd: float = 0.19,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
 ) -> torch.Tensor:
     """Shaped contact-force tracking (WTW ``tracking_contacts_shaped_force``)."""
     from isaaclab.sensors import ContactSensor
 
     gait_params = _gait_params_dict(
-        gait_frequency, gait_phase, gait_offset, gait_bound, gait_duration, kappa_gait_probs
+        gait_frequency,
+        gait_phase,
+        gait_offset,
+        gait_bound,
+        gait_duration,
+        kappa_gait_probs,
+        **_gait_switch_kwargs(
+            command_name,
+            command_threshold,
+            switch_gait_when_vy_yaw_zero,
+            zero_vy_yaw_gait_frequency,
+            zero_vy_yaw_gait_phase,
+            zero_vy_yaw_gait_offset,
+            zero_vy_yaw_gait_bound,
+            zero_vy_yaw_gait_duration,
+            zero_vy_yaw_kappa_gait_probs,
+            footswing_height_cmd,
+            zero_vy_yaw_footswing_height_cmd,
+        ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
@@ -337,10 +502,37 @@ def wtw_tracking_contacts_shaped_vel(
     command_name: str = "base_velocity",
     zero_when_vy_yaw_zero: bool = False,
     command_threshold: float = 1e-3,
+    switch_gait_when_vy_yaw_zero: bool = False,
+    zero_vy_yaw_gait_frequency: float = 0.0,
+    zero_vy_yaw_gait_phase: float = 0.5,
+    zero_vy_yaw_gait_offset: float = 0.0,
+    zero_vy_yaw_gait_bound: float = 0.0,
+    zero_vy_yaw_gait_duration: float = 0.5,
+    zero_vy_yaw_kappa_gait_probs: float = 0.07,
+    footswing_height_cmd: float = 0.19,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
 ) -> torch.Tensor:
     """Shaped foot-velocity tracking during stance (WTW ``tracking_contacts_shaped_vel``)."""
     gait_params = _gait_params_dict(
-        gait_frequency, gait_phase, gait_offset, gait_bound, gait_duration, kappa_gait_probs
+        gait_frequency,
+        gait_phase,
+        gait_offset,
+        gait_bound,
+        gait_duration,
+        kappa_gait_probs,
+        **_gait_switch_kwargs(
+            command_name,
+            command_threshold,
+            switch_gait_when_vy_yaw_zero,
+            zero_vy_yaw_gait_frequency,
+            zero_vy_yaw_gait_phase,
+            zero_vy_yaw_gait_offset,
+            zero_vy_yaw_gait_bound,
+            zero_vy_yaw_gait_duration,
+            zero_vy_yaw_kappa_gait_probs,
+            footswing_height_cmd,
+            zero_vy_yaw_footswing_height_cmd,
+        ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
     asset: Articulation = env.scene[asset_cfg.name]

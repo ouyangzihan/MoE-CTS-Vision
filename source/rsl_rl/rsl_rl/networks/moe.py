@@ -82,12 +82,12 @@ class MLP(nn.Module):
         super().__init__()
 
         dims = [input_dim] + hidden_dims
-        act_func = get_activation(activation)
         layers = []
         last_dim = dims[0]
         for h_dim in dims[1:]:
             layers.append(nn.Linear(last_dim, h_dim))
-            layers.append(act_func)
+            # Fresh activation per layer so ReDo hooks see this layer's width.
+            layers.append(get_activation(activation))
             if activation == 'cat_elu':
                 last_dim = h_dim * 2
             else:

@@ -120,34 +120,37 @@ def _broadcast_neuron_mask(mask: torch.Tensor, param: torch.Tensor, neuron_axis:
     return mask.reshape(*view_shape).expand(*param.shape)
 
 
+def _align_neuron_mask(neuron_mask: torch.Tensor, target_size: int) -> torch.Tensor:
+    """Resize a 1D neuron mask to *target_size*.
+
+    Handles width changes such as CatELU (activation is 2x ``out_features``) and
+    a shared activation module whose last forward is narrower than this layer.
+    """
+    mask = neuron_mask.reshape(-1)
+    if mask.numel() == target_size:
+        return mask
+    if target_size > mask.numel():
+        if mask.numel() == 0 or target_size % mask.numel() != 0:
+            raise ValueError(f"Cannot expand neuron mask of size {mask.numel()} to {target_size}")
+        return mask.repeat_interleave(target_size // mask.numel())
+    if target_size == 0 or mask.numel() % target_size != 0:
+        raise ValueError(f"Cannot reduce neuron mask of size {mask.numel()} to {target_size}")
+    ratio = mask.numel() // target_size
+    return mask.reshape(target_size, ratio).max(dim=1).values
+
+
 def create_mask_helper(
     neuron_mask: torch.Tensor,
     current_param: torch.Tensor,
     next_param: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build incoming/outgoing weight masks from a 1D neuron mask."""
-    if current_param.ndim == 2:
-        if current_param.shape[0] > neuron_mask.shape[0]:
-            repeat = int(current_param.shape[0] / neuron_mask.shape[0])
-            neuron_mask = neuron_mask.repeat_interleave(repeat)
-        elif neuron_mask.shape[0] > current_param.shape[0]:
-            # e.g. CatELU doubles the activation width relative to linear out_features.
-            ratio = int(neuron_mask.shape[0] / current_param.shape[0])
-            neuron_mask = neuron_mask.reshape(current_param.shape[0], ratio).max(dim=1).values
-        incoming_mask = _broadcast_neuron_mask(neuron_mask, current_param, neuron_axis=0)
-        outgoing_mask = _broadcast_neuron_mask(neuron_mask, next_param, neuron_axis=1)
-    elif current_param.ndim == 4:
-        if current_param.shape[0] > neuron_mask.shape[0]:
-            repeat = int(current_param.shape[0] / neuron_mask.shape[0])
-            neuron_mask = neuron_mask.repeat_interleave(repeat)
-        elif neuron_mask.shape[0] > current_param.shape[0]:
-            ratio = int(neuron_mask.shape[0] / current_param.shape[0])
-            neuron_mask = neuron_mask.reshape(current_param.shape[0], ratio).max(dim=1).values
-        incoming_mask = _broadcast_neuron_mask(neuron_mask, current_param, neuron_axis=0)
-        outgoing_mask = _broadcast_neuron_mask(neuron_mask, next_param, neuron_axis=1)
-    else:
+    if current_param.ndim not in (2, 4):
         raise ValueError(f"Unsupported parameter rank for ReDo: {current_param.ndim}")
-
+    incoming_neurons = _align_neuron_mask(neuron_mask, current_param.shape[0])
+    outgoing_neurons = _align_neuron_mask(neuron_mask, next_param.shape[1])
+    incoming_mask = _broadcast_neuron_mask(incoming_neurons, current_param, neuron_axis=0)
+    outgoing_mask = _broadcast_neuron_mask(outgoing_neurons, next_param, neuron_axis=1)
     return incoming_mask, outgoing_mask
 
 
@@ -326,16 +329,22 @@ class RedoManager:
 
     def _register_activation_hooks(self) -> None:
         for spec in self.layer_specs:
-            target = spec.activation_module if spec.activation_module is not None else spec.linear
-
-            def _make_hook(name: str) -> Callable:
+            def _make_hook(name: str, activation_module: nn.Module | None) -> Callable:
                 def hook(_module: nn.Module, _inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
                     activation = output[0] if isinstance(output, tuple) else output
+                    activation = activation.detach()
+                    # Score post-activation using this layer's Linear/Conv output.
+                    # ``.forward()`` bypasses hooks, so a shared activation module
+                    # (common in these MLPs) cannot overwrite other layers' stats.
+                    if activation_module is not None:
+                        activation = activation_module.forward(activation)
                     self._activations[name] = activation.detach()
 
                 return hook
 
-            self._hooks.append(target.register_forward_hook(_make_hook(spec.name)))
+            self._hooks.append(
+                spec.linear.register_forward_hook(_make_hook(spec.name, spec.activation_module))
+            )
 
     def close(self) -> None:
         for hook in self._hooks:
@@ -471,7 +480,7 @@ class RedoManager:
             _maybe_reset_optimizer_state(param_to_optim.get(spec.linear.weight), spec.linear.weight, incoming_mask)
 
             if spec.linear.bias is not None:
-                bias_mask = neuron_mask.to(spec.linear.bias.device)
+                bias_mask = _align_neuron_mask(neuron_mask.to(spec.linear.bias.device), spec.linear.bias.shape[0])
                 spec.linear.bias.data.copy_(
                     torch.where(bias_mask == 1, torch.zeros_like(spec.linear.bias), spec.linear.bias)
                 )

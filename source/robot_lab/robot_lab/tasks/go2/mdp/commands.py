@@ -101,8 +101,11 @@ class Go2RLGymCommand(CommandTerm):
                 )
             self.terrain_type2idx = {"flat": 0}
             self.terrain_idxs = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-            spacing = float(terrain_cfg.env_spacing or 0.5)
-            self.terrain_length = spacing * 1000.0
+            # Infinite plane has no tile edge to reach. A huge fake length made
+            # remaining_dist ≫ episode distance, which (1) forced |vx|/|vy| to
+            # the range extremes via dynamic_resample and (2) zeroed
+            # next_time_left so zero-command sampling never ran.
+            self.terrain_length = 0.0
             return
 
         self.terrain_types = list(terrain_cfg.terrain_generator.sub_terrains.keys())
@@ -423,7 +426,7 @@ class Go2RLGymCommandCfg(CommandTermCfg):
     limit_vel_invert_when_continuous: bool = True
     """Invert the limit logic when using continuous sample limit velocity commands"""
 
-    zero_command_curriculum: dict = {'start_iter': 0, 'end_iter': 1500, 'start_value': 0.0, 'end_value': 0.1}
+    zero_command_curriculum: dict = {'start_iter': 0, 'end_iter': 1500, 'start_value': 0.0, 'end_value': 0.2}
     """Start training with zero commands and then gradually increase zero command probability"""
     limit_vel: dict = {"lin_vel_x": [-1, 1], "lin_vel_y": [-1, 1], "ang_vel_yaw": [-1, 0, 1]}
     """Sample vel commands from min [-1] or zero [0] or max [1] range only"""

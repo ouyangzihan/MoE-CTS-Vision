@@ -54,8 +54,7 @@ class CNN(nn.Sequential):
         """
         super().__init__()
 
-        # Resolve activation function
-        activation_function = resolve_nn_activation(activation)
+        # Resolve activation per layer so shared-module forward hooks stay correct.
 
         # Create layers sequentially
         layers = []
@@ -100,7 +99,7 @@ class CNN(nn.Sequential):
                 )
 
             # Append activation function
-            layers.append(activation_function)
+            layers.append(resolve_nn_activation(activation))
 
             # Apply max pooling if specified
             if get_param(max_pool, idx):

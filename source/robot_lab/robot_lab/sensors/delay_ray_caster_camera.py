@@ -219,15 +219,7 @@ class DelayRayCasterCamera(RayCasterCamera):
         self._env_cfg_ref = None
 
         if self.cfg.depth_history_length > 0:
-            sample_shape = next(iter(self._data.output.values())).shape[1:]
-            if len(sample_shape) == 1 and sample_shape[0] == 1:
-                h = int(self.cfg.pattern_cfg.height)
-                w = int(self.cfg.pattern_cfg.width)
-                processed_shape = (h, w)
-            elif len(sample_shape) >= 2:
-                processed_shape = sample_shape[-2], sample_shape[-1]
-            else:
-                processed_shape = (int(self.cfg.pattern_cfg.height), int(self.cfg.pattern_cfg.width))
+            processed_shape = tuple(self.image_shape)
 
             self._processed_shape = processed_shape
             self._processed_history_length = int(self.cfg.depth_history_length)
@@ -291,6 +283,8 @@ class DelayRayCasterCamera(RayCasterCamera):
         elif depth.ndim == 4 and depth.shape[1] == 1:
             depth = depth.squeeze(1)
         elif depth.ndim == 2:
+            depth = depth.reshape(depth.shape[0], *self._processed_shape)
+        if depth.ndim == 3 and tuple(depth.shape[-2:]) != self._processed_shape:
             depth = depth.reshape(depth.shape[0], *self._processed_shape)
         if depth.ndim != 3:
             raise ValueError(f"Expected depth [B,H,W], got {tuple(depth.shape)}")

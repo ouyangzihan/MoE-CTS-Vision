@@ -148,6 +148,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     use_pose_velocity = resolve_use_pose_velocity_command(env_cfg, args_cli)
     configure_command_delivery(env_cfg, use_pose_velocity=use_pose_velocity)
+    if hasattr(env_cfg, "apply_stand_still_scale_without_terrain"):
+        env_cfg.apply_stand_still_scale_without_terrain()
     if use_pose_velocity:
         if enable_pose_velocity_target_vis(env_cfg):
             print("[INFO] PoseVelocityCommand target flat-patch visualization enabled.")

@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 
 from rsl_rl.utils.redo import (
+    RedoConfig,
+    RedoManager,
+    _align_neuron_mask,
     create_mask_helper,
     discover_mlp_recycle_layers,
     estimate_neuron_score,
@@ -75,3 +78,70 @@ def test_weight_reinit_zero_and_random():
     randomed = weight_reinit_random(param, mask, generator=torch.Generator().manual_seed(0))
     assert not torch.allclose(randomed[0], torch.ones(3))
     assert torch.all(randomed[1] == 1.0)
+
+
+def test_align_neuron_mask_expand_and_reduce():
+    narrow = torch.tensor([1.0, 0.0, 1.0, 0.0])
+    expanded = _align_neuron_mask(narrow, 16)
+    assert expanded.shape == (16,)
+    assert expanded[0].item() == 1.0
+    assert expanded[4].item() == 0.0
+
+    wide = torch.tensor([1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+    reduced = _align_neuron_mask(wide, 4)
+    assert reduced.tolist() == [1.0, 1.0, 0.0, 1.0]
+
+
+def test_create_mask_helper_catelu_width():
+    current = nn.Linear(8, 4)
+    nxt = nn.Linear(8, 2)
+    neuron_mask = torch.tensor([1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
+    incoming, outgoing = create_mask_helper(neuron_mask, current.weight, nxt.weight)
+    assert incoming.shape == current.weight.shape
+    assert outgoing.shape == nxt.weight.shape
+    bias_mask = _align_neuron_mask(neuron_mask, current.bias.shape[0])
+    assert bias_mask.shape == current.bias.shape
+    torch.where(bias_mask == 1, torch.zeros_like(current.bias), current.bias)
+
+
+def _shared_elu_actor(in_dim: int = 10, hidden: tuple[int, ...] = (32, 8)) -> nn.Module:
+    """Reproduce the training MLP pattern: one ELU instance reused across layers."""
+    act = nn.ELU()
+    policy = nn.Module()
+    layers: list[nn.Module] = [nn.Linear(in_dim, hidden[0]), act]
+    for prev, nxt in zip(hidden, hidden[1:]):
+        layers.extend([nn.Linear(prev, nxt), act])
+    layers.append(nn.Linear(hidden[-1], 2))
+    policy.actor = nn.Sequential(*layers)
+    return policy
+
+
+def test_redo_hooks_capture_per_layer_activations_with_shared_elu():
+    policy = _shared_elu_actor()
+    manager = RedoManager(
+        policy=policy,
+        optimizers=[],
+        cfg=RedoConfig(enabled=True, module_names=("actor",)),
+        device="cpu",
+    )
+    assert len(manager.layer_specs) == 2
+    policy.actor(torch.randn(5, 10))
+    first = manager._activations[manager.layer_specs[0].name]
+    second = manager._activations[manager.layer_specs[1].name]
+    assert first.shape[-1] == 32
+    assert second.shape[-1] == 8
+
+
+def test_recycle_neurons_shared_elu_bias_width():
+    """Regression for 128-vs-512 bias crash when a shared ELU overwrote activations."""
+    policy = _shared_elu_actor(in_dim=16, hidden=(32, 8))
+    optimizer = torch.optim.Adam(policy.parameters())
+    manager = RedoManager(
+        policy=policy,
+        optimizers=[optimizer],
+        cfg=RedoConfig(enabled=True, module_names=("actor",), recycle_rate=0.5),
+        device="cpu",
+    )
+    policy.actor(torch.randn(16, 16))
+    logs = manager._recycle_neurons(update_step=1)
+    assert "redo/recycled_total" in logs
