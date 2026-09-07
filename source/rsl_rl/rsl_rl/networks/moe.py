@@ -147,7 +147,13 @@ class MoE(nn.Module):
     ):
         super().__init__()
         self.expert_num = expert_num
-        self.gating_top_k = gating_top_k
+        # TorchScript cannot compare Optional[int]; treat None / k>=N as dense softmax.
+        if gating_top_k is None or gating_top_k >= expert_num:
+            self.gating_top_k = expert_num
+        elif gating_top_k < 1:
+            raise ValueError(f"gating_top_k must be >= 1, got {gating_top_k}")
+        else:
+            self.gating_top_k = int(gating_top_k)
 
         # Expert networks
         self.experts = Experts(
@@ -181,7 +187,7 @@ class MoE(nn.Module):
 
     def forward(self, x):
         logits = self.gating_mlp(x)
-        if self.gating_top_k is not None and self.gating_top_k < self.expert_num:
+        if self.gating_top_k < self.expert_num:
             top_k_logits, top_k_indices = torch.topk(logits, self.gating_top_k, dim=-1)
             top_k_weights = F.softmax(top_k_logits, dim=-1)
             weights = torch.zeros_like(logits)

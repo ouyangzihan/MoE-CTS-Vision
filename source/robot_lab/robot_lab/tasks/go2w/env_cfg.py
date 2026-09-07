@@ -41,6 +41,7 @@ ALL_JOINT_NAMES = LEG_JOINT_NAMES + WHEEL_JOINT_NAMES
 BASE_LINK_NAME = "base"
 FOOT_LINK_NAME = ".*_foot"
 BASE_HEIGHT_TARGET = 0.408
+WHEEL_RADIUS = 0.086
 
 # --- Camera ---
 D435I_DEPTH_WIDTH = 60
@@ -273,12 +274,24 @@ def make_pose_velocity_command_cfg() -> mdp.PoseVelocityCommandCfg:
 
 
 def make_legacy_go2rl_gym_command_cfg() -> mdp.Go2RLGymCommandCfg:
-    """Build fixed-range random-velocity Go2RLGym command config."""
+    """Build fixed-range random-velocity Go2RLGym command config.
+
+    Each of ``vx``, ``vy``, ``yaw`` is sampled independently: 60% zero, 10% range
+    max, 10% range min, 20% uniform in range. Joint all-zero / limit-vel overrides
+    are disabled.
+    """
     fixed = (-1.0, 1.0)
     return mdp.Go2RLGymCommandCfg(
         resampling_time=5.0,
         resampling_time_range=(5.0, 5.0),
-        dynamic_resample_commands=True,
+        dynamic_resample_commands=False,
+        independent_axis_mixture=True,
+        axis_zero_prob=0.6,
+        axis_max_prob=0.1,
+        axis_min_prob=0.1,
+        zero_command_curriculum=None,
+        limit_vel_prob=0.0,
+        limit_ang_vel_at_zero_command_prob=0.0,
         ranges=mdp.Go2RLGymCommandCfg.Ranges(
             lin_vel_x=fixed,
             lin_vel_y=fixed,
@@ -857,6 +870,7 @@ class RewardsCfg:
             "base_height_target": BASE_HEIGHT_TARGET,
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             "sensor_cfg": SceneEntityCfg("height_scanner_small"),
+            "wheel_radius": 0.086,
         },
     )
     hip_pos_penalty_l1 = RewTerm(
@@ -884,7 +898,7 @@ class RewardsCfg:
     # Hiking-in-the-Wild: discourage freezing / backing up under forward commands.
     dont_wait = RewTerm(
         func=mdp.dont_wait,
-        weight=-0.1,
+        weight=-0.,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.3,
@@ -978,7 +992,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.25, #-0.25
+            "final_weight": -0.3, #-0.25
             "start_it": 0,
             "end_it": 5000,
         },

@@ -96,6 +96,47 @@ def dont_wait(
     )
 
 
+def feet_regulation(
+    env: ManagerBasedRLEnv,
+    base_height_target: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_cfg: SceneEntityCfg | None = None,
+    wheel_radius: float = 0.086,
+) -> torch.Tensor:
+    """Penalize lateral (body-y) wheel motion near the ground.
+
+    Unlike the legged ``feet_regulation``, only sideways speed is penalized so
+    forward rolling is not discouraged. Clearance is measured from the wheel
+    contact patch (link center minus ``wheel_radius``), not the hub.
+    """
+    from robot_lab.tasks.go2.mdp.rewards import _get_base_height
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    feet_ids = asset_cfg.body_ids
+    num_feet = len(feet_ids)
+
+    feet_pos_w = asset.data.body_pos_w[:, feet_ids, :]
+    base_pos_w = asset.data.root_pos_w.unsqueeze(1)
+    feet_vel_w = asset.data.body_lin_vel_w[:, feet_ids, :]
+    base_height = _get_base_height(env, base_height_target, asset_cfg, sensor_cfg)
+
+    root_quat = asset.data.root_quat_w.unsqueeze(1).expand(-1, num_feet, -1).reshape(-1, 4)
+    feet_vel_b = quat_apply_inverse(root_quat, feet_vel_w.reshape(-1, 3)).reshape(
+        env.num_envs, num_feet, 3
+    )
+    lateral_vel_sq = feet_vel_b[:, :, 1].pow(2)
+
+    gravity_w = torch.tensor(env.sim.cfg.gravity, device=env.device, dtype=feet_pos_w.dtype)
+    down_w = gravity_w / torch.norm(gravity_w)
+
+    delta_feet_w = feet_pos_w - base_pos_w
+    feet2base_height = torch.sum(delta_feet_w * down_w.view(1, 1, 3), dim=-1)
+    # Link origin is the wheel hub; subtract radius so grounded wheels have ~0 clearance.
+    feet_height = torch.clamp(base_height.unsqueeze(1) - feet2base_height - wheel_radius, min=0.0)
+
+    return (lateral_vel_sq * torch.exp(-feet_height / (0.025 * base_height_target))).sum(dim=-1)
+
+
 def wheels_not_in_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """Penalize wheels that are not in contact with any surface.
 

@@ -153,6 +153,11 @@ class Go2RLGymCommand(CommandTerm):
         self._update_command_range_curriculum()
         remaining_dist = torch.clip(0.625 * self.terrain_length - torch.norm(self.commands_xy_accumulation[env_ids], dim=1) * self.cfg.resampling_time, 0.0)
         self.time_left[env_ids] = self.cfg.resampling_time
+        if self.cfg.independent_axis_mixture:
+            self._resample_independent_axis_mixture(env_ids)
+            self.commands_xy_accumulation[env_ids] += self.commands[env_ids, :2]
+            self.time_since_resample[env_ids] = 0.0
+            return
         if self.cfg.dynamic_resample_commands:
             # arrive at boundary 0.625 times the width of the remaining distance
             if ((env.max_episode_length - env.episode_length_buf[env_ids]) + 1 == 0).any():
@@ -273,6 +278,31 @@ class Go2RLGymCommand(CommandTerm):
 
         self.commands_xy_accumulation[env_ids] += self.commands[env_ids, :2]
         self.time_since_resample[env_ids] = 0.0
+
+    def _resample_independent_axis_mixture(self, env_ids: Sequence[int]) -> None:
+        """Sample vx, vy, yaw independently (zero / max / min / uniform-in-range)."""
+        if isinstance(env_ids, torch.Tensor):
+            n = int(env_ids.sum()) if env_ids.dtype == torch.bool else int(env_ids.numel())
+        else:
+            n = len(env_ids)
+        if n == 0:
+            return
+        zero_p = float(self.cfg.axis_zero_prob)
+        max_p = float(self.cfg.axis_max_prob)
+        min_p = float(self.cfg.axis_min_prob)
+        max_cut = zero_p + max_p
+        min_cut = max_cut + min_p
+        for axis, key in ((0, "lin_vel_x"), (1, "lin_vel_y"), (2, "ang_vel_yaw")):
+            low = self.env_command_ranges[key][env_ids, 0]
+            high = self.env_command_ranges[key][env_ids, 1]
+            u = torch.rand(n, device=self.device)
+            uniform = low + (high - low) * torch.rand(n, device=self.device)
+            sampled = torch.where(
+                u < zero_p,
+                torch.zeros(n, device=self.device, dtype=self.commands.dtype),
+                torch.where(u < max_cut, high, torch.where(u < min_cut, low, uniform)),
+            )
+            self.commands[env_ids, axis] = sampled
 
     def _update_command(self):
         current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self._env.scene.env_origins[:, :2], dim=1)
@@ -423,10 +453,21 @@ class Go2RLGymCommandCfg(CommandTermCfg):
 
     dynamic_resample_commands: bool = True
     """Sample commands with low bounds"""
+    independent_axis_mixture: bool = False
+    """If True, sample vx/vy/yaw independently and skip all-zero / limit-vel overrides."""
+    axis_zero_prob: float = 0.5
+    """Per-axis probability of sampling exactly 0 when ``independent_axis_mixture`` is on."""
+    axis_max_prob: float = 0.15
+    """Per-axis probability of sampling the current range maximum."""
+    axis_min_prob: float = 0.15
+    """Per-axis probability of sampling the current range minimum.
+
+    Remaining probability is uniform in ``[min, max]``.
+    """
     limit_vel_invert_when_continuous: bool = True
     """Invert the limit logic when using continuous sample limit velocity commands"""
 
-    zero_command_curriculum: dict = {'start_iter': 0, 'end_iter': 1500, 'start_value': 0.0, 'end_value': 0.2}
+    zero_command_curriculum: dict | None = {'start_iter': 0, 'end_iter': 1500, 'start_value': 0.0, 'end_value': 0.2}
     """Start training with zero commands and then gradually increase zero command probability"""
     limit_vel: dict = {"lin_vel_x": [-1, 1], "lin_vel_y": [-1, 1], "ang_vel_yaw": [-1, 0, 1]}
     """Sample vel commands from min [-1] or zero [0] or max [1] range only"""

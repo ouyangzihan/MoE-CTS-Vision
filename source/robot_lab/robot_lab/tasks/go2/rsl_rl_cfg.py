@@ -5,7 +5,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 300000
-    save_interval = 100
+    save_interval = 1000
     experiment_name = "go2_rough" 
     
     policy = RslRlPpoActorCriticCfg(
@@ -40,7 +40,7 @@ class MoeCtsSymmetryCfg:
 class RslRlMoeCtsActorCriticCfg(RslRlPpoActorCriticCfg):
     class_name = "ActorCriticMoECTS"
     init_noise_std = 1.0
-    expert_num = 8 # number of experts in the student model
+    expert_num = 64 # number of experts in the student model
     gating_top_k: int | None = None  # sparse gating: only top-k experts active (None = dense)
     latent_dim = 32
     norm_type = 'l2norm' # normalization type for encoders: l2norm, simnorm
@@ -137,7 +137,7 @@ class MoECTSRunnerCfg(RslRlOnPolicyRunnerCfg):
     class_name = "OnPolicyRunnerCTS"
     num_steps_per_env = 24
     max_iterations = 300000
-    save_interval = 100
+    save_interval = 1000
     policy = RslRlMoeCtsActorCriticCfg()
     algorithm = RslRlMoeCtsAlgorithmCfg()
 

@@ -538,6 +538,27 @@ def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntit
     return reward
 
 
+def lin_acc_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize z-axis base linear acceleration using L2 squared kernel.
+
+    Uses the root COM acceleration in the body frame with gravity removed so a
+    stationary robot is not constantly penalized.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    lin_acc_w = asset.data.body_lin_acc_w[:, 0, :]
+    gravity_w = torch.tensor(env.sim.cfg.gravity, device=env.device, dtype=lin_acc_w.dtype)
+    lin_acc_b = quat_apply_inverse(asset.data.root_quat_w, lin_acc_w - gravity_w)
+    return torch.square(lin_acc_b[:, 2])
+
+
+def ang_acc_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize xy-axis base angular acceleration using L2 squared kernel."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    ang_acc_w = asset.data.body_ang_acc_w[:, 0, :]
+    ang_acc_b = quat_apply_inverse(asset.data.root_quat_w, ang_acc_w)
+    return torch.sum(torch.square(ang_acc_b[:, :2]), dim=1)
+
+
 def undesired_contacts(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """Penalize undesired contacts as the number of violations that are above a threshold."""
     # extract the used quantities (to enable type-hinting)

@@ -17,6 +17,7 @@ from robot_lab.tasks.go2.rsl_rl_cfg import MoECTSSymmetryRunnerCfg, RslRlMoeCtsA
 from robot_lab.tasks.go2w.env_cfg import (
     BASE_HEIGHT_TARGET,
     FOOT_LINK_NAME,
+    WHEEL_RADIUS,
     Go2WEnvSymmetryCfg,
     Go2WSceneCfg,
     RewardsCfg,
@@ -25,28 +26,39 @@ from robot_lab.tasks.go2w.rsl_rl_cfg import Go2WMoeCtsSymmetryCfg
 
 # WTW ``scripts/train.py`` scales for the six augmented auxiliary rewards (Table 1).
 WTW_JUMP_WEIGHT = 10.0
-WTW_ORIENTATION_CONTROL_WEIGHT = -5.0
+WTW_ORIENTATION_CONTROL_WEIGHT = -20.0 # -5.0
 WTW_RAIBERT_HEURISTIC_WEIGHT = -10.0
 WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT = -30.0
 WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 4.0
 WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
 
-_WTW_FOOTSWING_HEIGHT_CMD = 0.07
+_WTW_FOOTSWING_HEIGHT_CMD = 0.04
 
 _WTW_GAIT_TIMING_PARAMS = {
-    "gait_frequency": 1.5,
+    "gait_frequency": 2.0,
     "gait_phase": 0.5,
     "gait_offset": 0.0,
     "gait_bound": 0.0,
     "gait_duration": 0.5,
     "kappa_gait_probs": 0.07,
     "footswing_height_cmd": _WTW_FOOTSWING_HEIGHT_CMD,
+    # freq = base * (0.5 * |vy| + 1); planted gait (freq=0) stays planted.
+    "scale_gait_frequency_by_vy": True,
+    "gait_frequency_vy_coef": 0.5,
+    # Footswing: 20% of base at iter 0 → 100% by iter 2500 (num_steps_per_iter=24).
+    "footswing_height_curriculum_start_scale": 0.25,
+    "footswing_height_curriculum_end_it": 2500,
+    "num_steps_per_iter": 24,
 }
 
 # Used whenever both vy and yaw commands are ~0 (stand / straight-roll).
 _WTW_ZERO_VY_YAW_GAIT_TIMING_PARAMS = {
-    **_WTW_GAIT_TIMING_PARAMS,
     "gait_frequency": 0.0,
+    "gait_phase": 0.5,
+    "gait_offset": 0.0,
+    "gait_bound": 0.0,
+    "gait_duration": 0.5,
+    "kappa_gait_probs": 0.07,
     "footswing_height_cmd": 0.0,
 }
 
@@ -124,6 +136,10 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         },
     )
 
+    # Same weights as ``lin_vel_z_l2`` / ``ang_vel_xy_l2`` in ``RewardsCfg``.
+    lin_acc_z_l2 = RewTerm(func=mdp.lin_acc_z_l2, weight=-0.001)
+    ang_acc_xy_l2 = RewTerm(func=mdp.ang_acc_xy_l2, weight=-0.0000025)
+
     wtw_jump = RewTerm(
         func=mdp.wtw_jump,
         weight=WTW_JUMP_WEIGHT,
@@ -154,6 +170,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         weight=WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
+            "foot_radius": WHEEL_RADIUS,
             **_WTW_GAIT_TIMING_PARAMS,
             **_WTW_VY_YAW_GATE_PARAMS,
             **_WTW_GAIT_SWITCH_PARAMS,
@@ -207,13 +224,18 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         self.rewards.wheels_not_in_contact = None
         self.rewards.local_terrain_tilt_angle = None
         self.rewards.base_tilt_angle.weight = -0.2
-        # self.rewards.feet_regulation.weight = -0.05
+        self.rewards.wheel_lateral_drag.weight = 0.0
+        self.rewards.feet_regulation.weight = -0.05
         if getattr(self.curriculum, "terrain_level_progress", None) is not None:
             self.curriculum.terrain_level_progress = None
         if getattr(self.curriculum, "local_terrain_tilt_angle", None) is not None:
             self.curriculum.local_terrain_tilt_angle = None
         if getattr(self.curriculum, "wheels_not_in_contact", None) is not None:
             self.curriculum.wheels_not_in_contact = None
+        if getattr(self.curriculum, "wheel_lateral_drag", None) is not None:
+            self.curriculum.wheel_lateral_drag = None
+        if getattr(self.curriculum, "feet_regulation", None) is not None:
+            self.curriculum.feet_regulation = None
 
         self.apply_stand_still_scale_without_terrain()
 

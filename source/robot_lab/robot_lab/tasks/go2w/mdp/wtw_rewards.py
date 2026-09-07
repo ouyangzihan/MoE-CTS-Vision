@@ -5,6 +5,11 @@ Ports the six behavior-conditioned reward terms from
 Gait timing uses fixed trotting defaults from the WTW training script unless
 overridden via reward-term params. When ``switch_gait_when_vy_yaw_zero`` is set,
 envs with both vy and yaw ~0 use the ``zero_vy_yaw_*`` gait targets instead.
+
+Optional behaviors (enabled from ``symmetry_training_cfg``):
+- ``scale_gait_frequency_by_vy``: target freq = base * (coef * |vy| + 1).
+- ``footswing_height_curriculum_start_scale``: linear ramp of swing height to full
+  by ``footswing_height_curriculum_end_it`` learning iterations.
 """
 
 from __future__ import annotations
@@ -56,6 +61,11 @@ def _gait_params_dict(
     zero_vy_yaw_kappa_gait_probs: float = 0.07,
     footswing_height_cmd: float = 0.19,
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
 ) -> dict:
     return {
         "gait_frequency": gait_frequency,
@@ -75,6 +85,11 @@ def _gait_params_dict(
         "zero_vy_yaw_kappa_gait_probs": zero_vy_yaw_kappa_gait_probs,
         "footswing_height_cmd": footswing_height_cmd,
         "zero_vy_yaw_footswing_height_cmd": zero_vy_yaw_footswing_height_cmd,
+        "scale_gait_frequency_by_vy": scale_gait_frequency_by_vy,
+        "gait_frequency_vy_coef": gait_frequency_vy_coef,
+        "footswing_height_curriculum_start_scale": footswing_height_curriculum_start_scale,
+        "footswing_height_curriculum_end_it": footswing_height_curriculum_end_it,
+        "num_steps_per_iter": num_steps_per_iter,
     }
 
 
@@ -93,6 +108,19 @@ def _vy_yaw_command_active_mask(
     return (vy.abs() > command_threshold) | (yaw.abs() > command_threshold)
 
 
+def _footswing_height_curriculum_scale(env: ManagerBasedRLEnv, params: dict) -> float:
+    """Linear ramp of footswing height: ``start_scale`` at iter 0 → 1.0 at ``end_it``."""
+    start_scale = params.get("footswing_height_curriculum_start_scale")
+    if start_scale is None:
+        return 1.0
+    end_it = max(int(params.get("footswing_height_curriculum_end_it", 2500)), 1)
+    num_steps = max(int(params.get("num_steps_per_iter", 24)), 1)
+    current_it = int(env.common_step_counter) // num_steps
+    progress = min(1.0, max(0.0, current_it / float(end_it)))
+    start = float(start_scale)
+    return start + (1.0 - start) * progress
+
+
 def _resolve_behavior_params(env: ManagerBasedRLEnv, params: dict) -> dict[str, torch.Tensor]:
     scalar_defaults = {
         "gait_frequency": 3.0,
@@ -107,23 +135,37 @@ def _resolve_behavior_params(env: ManagerBasedRLEnv, params: dict) -> dict[str, 
         "stance_width_cmd": 0.3,
         "stance_length_cmd": 0.45,
     }
+    footswing_scale = _footswing_height_curriculum_scale(env, params)
     resolved = {}
     for key, scalar_default in scalar_defaults.items():
         value = float(params.get(key, scalar_default))
+        if key == "footswing_height_cmd":
+            value *= footswing_scale
         resolved[key] = torch.full((env.num_envs,), value, device=env.device)
 
+    command_name = str(params.get("command_name", "base_velocity"))
+    command_threshold = float(params.get("command_threshold", 1e-3))
+
     if params.get("switch_gait_when_vy_yaw_zero", False):
-        stand_mask = ~_vy_yaw_command_active_mask(
-            env,
-            str(params.get("command_name", "base_velocity")),
-            float(params.get("command_threshold", 1e-3)),
-        )
+        stand_mask = ~_vy_yaw_command_active_mask(env, command_name, command_threshold)
         for key in _BEHAVIOR_OVERRIDE_KEYS:
             src = f"zero_vy_yaw_{key}"
             if src not in params:
                 continue
-            override = torch.full((env.num_envs,), float(params[src]), device=env.device)
-            resolved[key] = torch.where(stand_mask, override, resolved[key])
+            override = float(params[src])
+            override_t = torch.full((env.num_envs,), override, device=env.device)
+            resolved[key] = torch.where(stand_mask, override_t, resolved[key])
+
+    # Target frequency = base * (coef * |vy| + 1). Planted gait (freq≈0) stays planted.
+    if params.get("scale_gait_frequency_by_vy", False):
+        cmd = env.command_manager.get_command(command_name)
+        if cmd.shape[1] > 2:
+            vy_abs = cmd[:, 1].abs()
+        else:
+            vy_abs = torch.zeros(env.num_envs, device=env.device)
+        coef = float(params.get("gait_frequency_vy_coef", 0.5))
+        resolved["gait_frequency"] = resolved["gait_frequency"] * (coef * vy_abs + 1.0)
+
     return resolved
 
 
@@ -186,6 +228,18 @@ def _update_wtw_gait_state(env: ManagerBasedRLEnv, params: dict) -> WalkTheseWay
     )
 
     swing_phases = 1.0 - torch.abs(1.0 - torch.clip(normed_foot_indices * 2.0 - 1.0, 0.0, 1.0) * 2.0)
+
+    # Frequency 0 (vy=yaw≈0) is a planted gait: all wheels in stance, not a frozen trot.
+    plant_mask = behavior["gait_frequency"] <= 1e-6
+    if plant_mask.any():
+        env._wtw_gait_indices = torch.where(
+            plant_mask, torch.zeros_like(env._wtw_gait_indices), env._wtw_gait_indices
+        )
+        gait_indices = env._wtw_gait_indices
+        desired_contact_states = torch.where(
+            plant_mask.unsqueeze(1), torch.ones_like(desired_contact_states), desired_contact_states
+        )
+        swing_phases = torch.where(plant_mask.unsqueeze(1), torch.zeros_like(swing_phases), swing_phases)
 
     env._wtw_gait_state = WalkTheseWaysGaitState(
         gait_indices=gait_indices,
@@ -273,6 +327,11 @@ def _gait_switch_kwargs(
     zero_vy_yaw_kappa_gait_probs: float,
     footswing_height_cmd: float = 0.19,
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
 ) -> dict:
     return {
         "command_name": command_name,
@@ -286,6 +345,11 @@ def _gait_switch_kwargs(
         "zero_vy_yaw_kappa_gait_probs": zero_vy_yaw_kappa_gait_probs,
         "footswing_height_cmd": footswing_height_cmd,
         "zero_vy_yaw_footswing_height_cmd": zero_vy_yaw_footswing_height_cmd,
+        "scale_gait_frequency_by_vy": scale_gait_frequency_by_vy,
+        "gait_frequency_vy_coef": gait_frequency_vy_coef,
+        "footswing_height_curriculum_start_scale": footswing_height_curriculum_start_scale,
+        "footswing_height_curriculum_end_it": footswing_height_curriculum_end_it,
+        "num_steps_per_iter": num_steps_per_iter,
     }
 
 
@@ -312,6 +376,11 @@ def wtw_raibert_heuristic(
     zero_vy_yaw_kappa_gait_probs: float = 0.07,
     footswing_height_cmd: float = 0.19,
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
 ) -> torch.Tensor:
     """Raibert foot-placement heuristic (WTW ``raibert_heuristic``)."""
     gait_params = _gait_params_dict(
@@ -333,6 +402,11 @@ def wtw_raibert_heuristic(
             zero_vy_yaw_kappa_gait_probs,
             footswing_height_cmd,
             zero_vy_yaw_footswing_height_cmd,
+            scale_gait_frequency_by_vy,
+            gait_frequency_vy_coef,
+            footswing_height_curriculum_start_scale,
+            footswing_height_curriculum_end_it,
+            num_steps_per_iter,
         ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
@@ -396,8 +470,18 @@ def wtw_feet_clearance_cmd_linear(
     zero_vy_yaw_gait_duration: float = 0.5,
     zero_vy_yaw_kappa_gait_probs: float = 0.07,
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
 ) -> torch.Tensor:
-    """Track commanded foot-swing height during swing (WTW ``feet_clearance_cmd_linear``)."""
+    """Track commanded swing height of the wheel hub (WTW ``feet_clearance_cmd_linear``).
+
+    ``foot_radius`` is the wheel radius for Go2W (hub ``z`` on the ground). Target hub
+    height is ``footswing_height_cmd + foot_radius``. Default ``0.02`` is the WTW Go1
+    rubber foot; pass ``WHEEL_RADIUS`` (0.086) for Go2W.
+    """
     gait_params = _gait_params_dict(
         gait_frequency,
         gait_phase,
@@ -417,6 +501,11 @@ def wtw_feet_clearance_cmd_linear(
             zero_vy_yaw_kappa_gait_probs,
             footswing_height_cmd,
             zero_vy_yaw_footswing_height_cmd,
+            scale_gait_frequency_by_vy,
+            gait_frequency_vy_coef,
+            footswing_height_curriculum_start_scale,
+            footswing_height_curriculum_end_it,
+            num_steps_per_iter,
         ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
@@ -451,6 +540,11 @@ def wtw_tracking_contacts_shaped_force(
     zero_vy_yaw_kappa_gait_probs: float = 0.07,
     footswing_height_cmd: float = 0.19,
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
 ) -> torch.Tensor:
     """Shaped contact-force tracking (WTW ``tracking_contacts_shaped_force``)."""
     from isaaclab.sensors import ContactSensor
@@ -474,6 +568,11 @@ def wtw_tracking_contacts_shaped_force(
             zero_vy_yaw_kappa_gait_probs,
             footswing_height_cmd,
             zero_vy_yaw_footswing_height_cmd,
+            scale_gait_frequency_by_vy,
+            gait_frequency_vy_coef,
+            footswing_height_curriculum_start_scale,
+            footswing_height_curriculum_end_it,
+            num_steps_per_iter,
         ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
@@ -486,6 +585,10 @@ def wtw_tracking_contacts_shaped_force(
             1.0 - torch.exp(-foot_forces[:, i].square() / gait_force_sigma)
         )
     reward = reward / foot_forces.shape[1]
+    # Planted gait (freq=0): original swing term is 0; penalize missing contact force.
+    plant_mask = env._wtw_behavior_params["gait_frequency"] <= 1e-6
+    no_force = torch.exp(-foot_forces.square() / gait_force_sigma).mean(dim=1)
+    reward = torch.where(plant_mask, -no_force, reward)
     return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
@@ -511,6 +614,11 @@ def wtw_tracking_contacts_shaped_vel(
     zero_vy_yaw_kappa_gait_probs: float = 0.07,
     footswing_height_cmd: float = 0.19,
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
 ) -> torch.Tensor:
     """Shaped foot-velocity tracking during stance (WTW ``tracking_contacts_shaped_vel``)."""
     gait_params = _gait_params_dict(
@@ -532,11 +640,21 @@ def wtw_tracking_contacts_shaped_vel(
             zero_vy_yaw_kappa_gait_probs,
             footswing_height_cmd,
             zero_vy_yaw_footswing_height_cmd,
+            scale_gait_frequency_by_vy,
+            gait_frequency_vy_coef,
+            footswing_height_curriculum_start_scale,
+            footswing_height_curriculum_end_it,
+            num_steps_per_iter,
         ),
     )
     gait = _update_wtw_gait_state(env, gait_params)
     asset: Articulation = env.scene[asset_cfg.name]
-    foot_velocities = torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :], dim=-1)
+    foot_vel_w = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :]
+    foot_vel_world = torch.norm(foot_vel_w, dim=-1)
+    # Rolling planted wheels move with the base; penalize hub speed relative to the body.
+    foot_vel_rel = torch.norm(foot_vel_w - asset.data.root_lin_vel_w.unsqueeze(1), dim=-1)
+    plant_mask = env._wtw_behavior_params["gait_frequency"] <= 1e-6
+    foot_velocities = torch.where(plant_mask.unsqueeze(1), foot_vel_rel, foot_vel_world)
     desired_contact = gait.desired_contact_states
     reward = torch.zeros(env.num_envs, device=env.device)
     for i in range(foot_velocities.shape[1]):
