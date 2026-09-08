@@ -757,7 +757,8 @@ class RewardsCfg:
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp_post_resample_boost,
-        weight=8.0,  # starts 2x; curriculum anneals to 2.0 by iter 500
+        # CurriculumCfg holds weight at 6.0 (no anneal); 2x std for 0.75s after resample.
+        weight=6.0,
         params={
             "command_name": "base_velocity",
             "std": 0.707106781,
@@ -767,7 +768,8 @@ class RewardsCfg:
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp_post_resample_boost,
-        weight=4.0,  # starts 2x; curriculum anneals to 1.0 by iter 500
+        # CurriculumCfg holds weight at 3.0 (no anneal); 2x std for 0.75s after resample.
+        weight=3.0,
         params={
             "command_name": "base_velocity",
             "std": 0.707106781,
@@ -882,6 +884,8 @@ class RewardsCfg:
             "stand_still_scale": 10.0,
             # PoseVelocity command is ``(vx, yaw)``.
             "stand_cmd_idxs": [0, 1],
+            # Bake True for Hydra; Symmetry-v1 flat plane overrides to False.
+            "require_flat_terrain": True,
         },
     )
     joint_pos_penalty_l1 = RewTerm(
@@ -892,6 +896,7 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
             "stand_still_scale": 10.0,
             "stand_cmd_idxs": [0, 1],
+            "require_flat_terrain": True,
         },
     )
     terrain_level_progress = RewTerm(func=mdp.terrain_level_progress, weight=6.)

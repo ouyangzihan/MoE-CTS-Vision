@@ -25,7 +25,7 @@ def _command_resample_boost_scale(
     boost_duration_s: float,
     boost_scale: float,
 ) -> torch.Tensor:
-    """Return per-env scale for tracking rewards shortly after a command resample."""
+    """Return per-env scale for rewards shortly after a command resample."""
     if boost_scale == 1.0 or boost_duration_s <= 0.0:
         return torch.ones(env.num_envs, device=env.device)
     term = env.command_manager.get_term(command_name)
@@ -47,11 +47,11 @@ def track_lin_vel_xy_exp_post_resample_boost(
     boost_scale: float = 2.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """``track_lin_vel_xy_exp`` with optional boost right after command changes."""
+    """``track_lin_vel_xy_exp`` with wider ``std`` right after command changes."""
     from robot_lab.tasks.go2.mdp.rewards import track_lin_vel_xy_exp
 
-    reward = track_lin_vel_xy_exp(env, std, command_name, asset_cfg=asset_cfg)
-    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+    std_scale = _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+    return track_lin_vel_xy_exp(env, std * std_scale, command_name, asset_cfg=asset_cfg)
 
 
 def track_ang_vel_z_exp_post_resample_boost(
@@ -62,10 +62,92 @@ def track_ang_vel_z_exp_post_resample_boost(
     boost_scale: float = 2.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """``track_ang_vel_z_exp`` with optional boost right after command changes."""
+    """``track_ang_vel_z_exp`` with wider ``std`` right after command changes."""
     from robot_lab.tasks.go2.mdp.rewards import track_ang_vel_z_exp
 
-    reward = track_ang_vel_z_exp(env, std, command_name, asset_cfg=asset_cfg)
+    std_scale = _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+    return track_ang_vel_z_exp(env, std * std_scale, command_name, asset_cfg=asset_cfg)
+
+
+def lin_vel_z_l2_post_resample_boost(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    boost_duration_s: float = 0.75,
+    boost_scale: float = 2.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """``lin_vel_z_l2`` with optional boost right after command changes."""
+    from robot_lab.tasks.go2.mdp.rewards import lin_vel_z_l2
+
+    reward = lin_vel_z_l2(env, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+
+
+def ang_vel_xy_l2_post_resample_boost(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    boost_duration_s: float = 0.75,
+    boost_scale: float = 2.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """``ang_vel_xy_l2`` with optional boost right after command changes."""
+    from robot_lab.tasks.go2.mdp.rewards import ang_vel_xy_l2
+
+    reward = ang_vel_xy_l2(env, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+
+
+def lin_acc_z_l2_post_resample_boost(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    boost_duration_s: float = 0.75,
+    boost_scale: float = 2.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """``lin_acc_z_l2`` with optional boost right after command changes."""
+    from robot_lab.tasks.go2.mdp.rewards import lin_acc_z_l2
+
+    reward = lin_acc_z_l2(env, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+
+
+def ang_acc_xy_l2_post_resample_boost(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    boost_duration_s: float = 0.75,
+    boost_scale: float = 2.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """``ang_acc_xy_l2`` with optional boost right after command changes."""
+    from robot_lab.tasks.go2.mdp.rewards import ang_acc_xy_l2
+
+    reward = ang_acc_xy_l2(env, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+
+
+def wtw_jump_post_resample_boost(
+    env: ManagerBasedRLEnv,
+    base_height_target: float,
+    body_height_cmd: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_name: str = "base_velocity",
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
+    boost_duration_s: float = 0.75,
+    boost_scale: float = 2.0,
+) -> torch.Tensor:
+    """``wtw_jump`` with optional boost right after command changes."""
+    from robot_lab.tasks.go2w.mdp.wtw_rewards import wtw_jump
+
+    reward = wtw_jump(
+        env,
+        base_height_target=base_height_target,
+        body_height_cmd=body_height_cmd,
+        asset_cfg=asset_cfg,
+        command_name=command_name,
+        zero_when_vy_yaw_zero=zero_when_vy_yaw_zero,
+        command_threshold=command_threshold,
+    )
     return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
 
 

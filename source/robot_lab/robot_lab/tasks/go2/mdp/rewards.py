@@ -531,10 +531,14 @@ def lin_vel_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
 
 
 def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize xy-axis base angular velocity using L2 squared kernel."""
+    """Penalize xy-axis base angular velocity using L2 squared kernel.
+
+    Body-frame x (roll rate) is weighted 2x relative to y (pitch rate).
+    """
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject = env.scene[asset_cfg.name]
-    reward = torch.sum(torch.square(asset.data.root_ang_vel_b[:, :2]), dim=1)
+    ang_vel_xy = asset.data.root_ang_vel_b[:, :2]
+    reward = 2.0 * torch.square(ang_vel_xy[:, 0]) + torch.square(ang_vel_xy[:, 1])
     return reward
 
 
@@ -552,11 +556,15 @@ def lin_acc_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
 
 
 def ang_acc_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize xy-axis base angular acceleration using L2 squared kernel."""
+    """Penalize xy-axis base angular acceleration using L2 squared kernel.
+
+    Body-frame x (roll acceleration) is weighted 2x relative to y (pitch acceleration).
+    """
     asset: RigidObject = env.scene[asset_cfg.name]
     ang_acc_w = asset.data.body_ang_acc_w[:, 0, :]
     ang_acc_b = quat_apply_inverse(asset.data.root_quat_w, ang_acc_w)
-    return torch.sum(torch.square(ang_acc_b[:, :2]), dim=1)
+    ang_acc_xy = ang_acc_b[:, :2]
+    return 2.0 * torch.square(ang_acc_xy[:, 0]) + torch.square(ang_acc_xy[:, 1])
 
 
 def undesired_contacts(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
