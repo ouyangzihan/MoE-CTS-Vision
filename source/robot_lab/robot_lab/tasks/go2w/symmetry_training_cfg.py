@@ -25,17 +25,20 @@ from robot_lab.tasks.go2w.env_cfg import (
 from robot_lab.tasks.go2w.rsl_rl_cfg import Go2WMoeCtsSymmetryCfg
 
 # WTW ``scripts/train.py`` scales for the six augmented auxiliary rewards (Table 1).
-WTW_JUMP_WEIGHT = 20.0
+WTW_JUMP_WEIGHT = 100.0
 WTW_ORIENTATION_CONTROL_WEIGHT = -20.0 # -5.0
 WTW_RAIBERT_HEURISTIC_WEIGHT = -10.0
+WTW_RAIBERT_HEURISTIC_IMBALANCE_X_WEIGHT = -15
+WTW_RAIBERT_HEURISTIC_IMBALANCE_Y_WEIGHT = -15
 WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT = -30.0
+WTW_FEET_CLEARANCE_CMD_LINEAR_IMBALANCE_WEIGHT = -10 # -40
 WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 4.0
 WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
 
 _WTW_FOOTSWING_HEIGHT_CMD = 0.04
 
 _WTW_GAIT_TIMING_PARAMS = {
-    "gait_frequency": 2.0, # 1.5,
+    "gait_frequency": 1.5,
     "gait_phase": 0.5,
     "gait_offset": 0.0,
     "gait_bound": 0.0,
@@ -44,9 +47,9 @@ _WTW_GAIT_TIMING_PARAMS = {
     "footswing_height_cmd": _WTW_FOOTSWING_HEIGHT_CMD,
     # freq = base * (0.5 * |vy| + 1); planted gait (freq=0) stays planted.
     "scale_gait_frequency_by_vy": True,
-    "gait_frequency_vy_coef": 0.5, # 1.0,
+    "gait_frequency_vy_coef": 1.0,
     # Footswing: 20% of base at iter 0 → 100% by iter 2500 (num_steps_per_iter=24).
-    "footswing_height_curriculum_start_scale": 0.25,
+    "footswing_height_curriculum_start_scale": 0.5,
     "footswing_height_curriculum_end_it": 2500,
     "num_steps_per_iter": 24,
 }
@@ -191,9 +194,46 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
             **_WTW_GAIT_SWITCH_PARAMS,
         },
     )
+    wtw_raibert_heuristic_imbalance_x = RewTerm(
+        func=mdp.wtw_raibert_heuristic_imbalance,
+        weight=WTW_RAIBERT_HEURISTIC_IMBALANCE_X_WEIGHT,
+        params={
+            "stance_width_cmd": 0.284,
+            "stance_length_cmd": 0.387,
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
+            "axis": "x",
+            **_WTW_GAIT_TIMING_PARAMS,
+            **_WTW_VY_YAW_GATE_PARAMS,
+            **_WTW_GAIT_SWITCH_PARAMS,
+        },
+    )
+    wtw_raibert_heuristic_imbalance_y = RewTerm(
+        func=mdp.wtw_raibert_heuristic_imbalance,
+        weight=WTW_RAIBERT_HEURISTIC_IMBALANCE_Y_WEIGHT,
+        params={
+            "stance_width_cmd": 0.284,
+            "stance_length_cmd": 0.387,
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
+            "axis": "y",
+            **_WTW_GAIT_TIMING_PARAMS,
+            **_WTW_VY_YAW_GATE_PARAMS,
+            **_WTW_GAIT_SWITCH_PARAMS,
+        },
+    )
     wtw_feet_clearance_cmd_linear = RewTerm(
         func=mdp.wtw_feet_clearance_cmd_linear,
         weight=WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
+            "foot_radius": WHEEL_RADIUS,
+            **_WTW_GAIT_TIMING_PARAMS,
+            **_WTW_VY_YAW_GATE_PARAMS,
+            **_WTW_GAIT_SWITCH_PARAMS,
+        },
+    )
+    wtw_feet_clearance_cmd_linear_imbalance = RewTerm(
+        func=mdp.wtw_feet_clearance_cmd_linear_imbalance,
+        weight=WTW_FEET_CLEARANCE_CMD_LINEAR_IMBALANCE_WEIGHT,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             "foot_radius": WHEEL_RADIUS,
@@ -239,6 +279,15 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # Task-only fixed command magnitudes (no curriculum expansion).
+        cmd = self.commands.base_velocity
+        cmd.ranges.lin_vel_x = (-1.5, 1.5)
+        cmd.ranges.lin_vel_y = (-0.75, 0.75)
+        cmd.ranges.ang_vel_yaw = (-1.5, 1.5)
+        cmd.command_range_max.lin_vel_x = (-1.5, 1.5)
+        cmd.command_range_max.lin_vel_y = (-0.75, 0.75)
+        cmd.command_range_max.ang_vel_yaw = (-1.5, 1.5)
+
         # No terrain mesh / curriculum on a plane.
         self.curriculum.terrain_levels = None
         if getattr(self.curriculum, "step_height_range", None) is not None:
@@ -249,7 +298,7 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         self.rewards.dont_wait = None
         self.rewards.wheels_not_in_contact = None
         self.rewards.local_terrain_tilt_angle = None
-        self.rewards.base_tilt_angle.weight = -0.2
+        self.rewards.base_tilt_angle.weight = -0.5
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0
         self.rewards.feet_regulation.weight = -0.05

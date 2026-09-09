@@ -58,6 +58,12 @@ parser.add_argument(
     default=False,
     help="Enable Recycling Dormant Neurons (ReDo) during MoE-CTS training.",
 )
+parser.add_argument(
+    "--single_checkpoint",
+    action="store_true",
+    default=False,
+    help="Keep only the latest checkpoint: delete the previous model_*.pt right before saving a new one.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -281,6 +287,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner = OnPolicyRunnerCTS(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+
+    # Optionally keep only one checkpoint on disk to reduce storage usage.
+    if args_cli.single_checkpoint:
+        _orig_save = runner.save
+        _last_ckpt: dict[str, str | None] = {"path": None}
+
+        def _save_single_checkpoint(path: str, *args, **kwargs):
+            prev = _last_ckpt["path"]
+            if prev is not None and prev != path and os.path.isfile(prev):
+                os.remove(prev)
+                print(f"[INFO] Removed previous checkpoint: {prev}")
+            _orig_save(path, *args, **kwargs)
+            _last_ckpt["path"] = path
+
+        runner.save = _save_single_checkpoint  # type: ignore[method-assign]
+        print("[INFO] --single_checkpoint enabled: only the latest model_*.pt will be kept.")
+
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
@@ -309,10 +332,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 f"(iter={loaded_iter}, steps/iter={num_steps_per_iter})."
             )
 
-    # dump the configuration into log-directory
-    dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
-    dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
-    sys.stdout = Logger(os.path.join(log_dir, "train.log"))
+    # dump the configuration into log-directory (rank 0 only; avoids multi-process
+    # races on params/*.yaml and train.log under torch.distributed.run)
+    if int(os.environ.get("RANK", "0")) == 0:
+        dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+        dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+        sys.stdout = Logger(os.path.join(log_dir, "train.log"))
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 

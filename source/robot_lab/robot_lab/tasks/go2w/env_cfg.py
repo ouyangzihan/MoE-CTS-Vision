@@ -280,27 +280,28 @@ def make_legacy_go2rl_gym_command_cfg() -> mdp.Go2RLGymCommandCfg:
     max, 10% range min, 20% uniform in range. Joint all-zero / limit-vel overrides
     are disabled.
     """
-    fixed = (-1.0, 1.0)
+    lin_vel = (-0.75, 0.75)
+    ang_vel = (-1.5, 1.5)
     return mdp.Go2RLGymCommandCfg(
         resampling_time=5.0,
         resampling_time_range=(5.0, 5.0),
         dynamic_resample_commands=False,
         independent_axis_mixture=True,
         axis_zero_prob=0.6,
-        axis_max_prob=0.1,
-        axis_min_prob=0.1,
+        axis_max_prob=0.05,
+        axis_min_prob=0.05,
         zero_command_curriculum=None,
         limit_vel_prob=0.0,
         limit_ang_vel_at_zero_command_prob=0.0,
         ranges=mdp.Go2RLGymCommandCfg.Ranges(
-            lin_vel_x=fixed,
-            lin_vel_y=fixed,
-            ang_vel_yaw=fixed,
+            lin_vel_x=lin_vel,
+            lin_vel_y=lin_vel,
+            ang_vel_yaw=ang_vel,
         ),
         command_range_max=mdp.Go2RLGymCommandCfg.CommandRangeMaxCfg(
-            lin_vel_x=fixed,
-            lin_vel_y=fixed,
-            ang_vel_yaw=fixed,
+            lin_vel_x=lin_vel,
+            lin_vel_y=lin_vel,
+            ang_vel_yaw=ang_vel,
         ),
         command_range_expand_interval=None,
         command_range_curriculum=[],
@@ -977,9 +978,9 @@ class CurriculumCfg:
         params={
             "term_name": "joint_pos_penalty_l1",
             "initial_weight": -0.008,
-            "final_weight": -0.1,
+            "final_weight": -0.15, # -0.1
             "start_it": 0,
-            "end_it": 7500,
+            "end_it": 5000,
         },
     )
     hip_pos_penalty_l1 = CurrTerm(
@@ -987,9 +988,9 @@ class CurriculumCfg:
         params={
             "term_name": "hip_pos_penalty_l1",
             "initial_weight": -0.04,
-            "final_weight": -0.5,
+            "final_weight": -0.75, # -0.5
             "start_it": 0,
-            "end_it": 7500,
+            "end_it": 5000,
         },
     )
     wheels_not_in_contact = CurrTerm(
@@ -997,7 +998,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.3, #-0.25
+            "final_weight": -0.4, #-0.3
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1009,7 +1010,7 @@ class CurriculumCfg:
             "initial_weight": -0.0,
             "final_weight": -0.08,
             "start_it": 0,
-            "end_it": 5000,
+            "end_it": 2500,
         },
     )
     feet_regulation = CurrTerm(
@@ -1029,7 +1030,7 @@ class CurriculumCfg:
             "initial_weight": -0.3,
             "final_weight": -0.6,
             "start_it": 0,
-            "end_it": 5000,
+            "end_it": 2500,
         },
     )
     terrain_level_progress = CurrTerm(
@@ -1039,16 +1040,16 @@ class CurriculumCfg:
             "initial_weight": 10.0,
             "final_weight": 5.0,
             "start_it": 0,
-            "end_it": 5000,
+            "end_it": 2500,
         },
     )
     base_linear_velocity = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "lin_vel_z_l2", "initial_weight": -2.0, "final_weight": -0.0, "start_it": 0, "end_it": 1500},
+        params={"term_name": "lin_vel_z_l2", "initial_weight": -2.0, "final_weight": -0.0, "start_it": 0, "end_it": 1000},
     )
     base_height_l2 = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "base_height_l2", "initial_weight": -2.0, "final_weight": -40.0, "start_it": 0, "end_it": 5000},
+        params={"term_name": "base_height_l2", "initial_weight": -2.0, "final_weight": -40.0, "start_it": 0, "end_it": 2500},
     )
 
 

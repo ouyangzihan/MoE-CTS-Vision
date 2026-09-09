@@ -353,6 +353,53 @@ def _gait_switch_kwargs(
     }
 
 
+def _wtw_raibert_squared_xy_err(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    stance_width_cmd: float,
+    stance_length_cmd: float,
+    asset_cfg: SceneEntityCfg,
+    gait_params: dict,
+) -> torch.Tensor:
+    """Per-leg squared Raibert xy error. Shape ``(num_envs, 4, 2)``."""
+    gait = _update_wtw_gait_state(env, gait_params)
+    asset: Articulation = env.scene[asset_cfg.name]
+    footsteps = _foot_positions_body_frame(env, asset, asset_cfg.body_ids)
+
+    desired_ys = torch.tensor(
+        [stance_width_cmd / 2, -stance_width_cmd / 2, stance_width_cmd / 2, -stance_width_cmd / 2],
+        device=env.device,
+    ).unsqueeze(0).expand(env.num_envs, -1)
+    desired_xs = torch.tensor(
+        [stance_length_cmd / 2, stance_length_cmd / 2, -stance_length_cmd / 2, -stance_length_cmd / 2],
+        device=env.device,
+    ).unsqueeze(0).expand(env.num_envs, -1)
+
+    cmd = env.command_manager.get_command(command_name)
+    x_vel_des = cmd[:, 0:1]
+    yaw_vel_des = cmd[:, 2:3] if cmd.shape[1] > 2 else cmd[:, 1:2]
+    behavior = env._wtw_behavior_params
+    frequencies = behavior["gait_frequency"].unsqueeze(1)
+    # Frequency 0 (stand / straight-roll gait) must not inflate Raibert lead.
+    step_period = torch.where(
+        frequencies > 1e-6,
+        0.5 / frequencies.clamp_min(1e-6),
+        torch.zeros_like(frequencies),
+    )
+
+    phases = torch.abs(1.0 - gait.foot_indices * 2.0) * 1.0 - 0.5
+    y_vel_des = yaw_vel_des * stance_length_cmd / 2.0
+    desired_ys_offset = phases * y_vel_des * step_period
+    desired_ys_offset[:, 2:4] *= -1.0
+    desired_xs_offset = phases * x_vel_des * step_period
+
+    desired_ys = desired_ys + desired_ys_offset
+    desired_xs = desired_xs + desired_xs_offset
+    desired_footsteps = torch.stack((desired_xs, desired_ys), dim=2)
+    err = torch.abs(desired_footsteps - footsteps[:, :, 0:2])
+    return torch.square(err)
+
+
 def wtw_raibert_heuristic(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -409,42 +456,78 @@ def wtw_raibert_heuristic(
             num_steps_per_iter,
         ),
     )
-    gait = _update_wtw_gait_state(env, gait_params)
-    asset: Articulation = env.scene[asset_cfg.name]
-    footsteps = _foot_positions_body_frame(env, asset, asset_cfg.body_ids)
-
-    desired_ys = torch.tensor(
-        [stance_width_cmd / 2, -stance_width_cmd / 2, stance_width_cmd / 2, -stance_width_cmd / 2],
-        device=env.device,
-    ).unsqueeze(0).expand(env.num_envs, -1)
-    desired_xs = torch.tensor(
-        [stance_length_cmd / 2, stance_length_cmd / 2, -stance_length_cmd / 2, -stance_length_cmd / 2],
-        device=env.device,
-    ).unsqueeze(0).expand(env.num_envs, -1)
-
-    cmd = env.command_manager.get_command(command_name)
-    x_vel_des = cmd[:, 0:1]
-    yaw_vel_des = cmd[:, 2:3] if cmd.shape[1] > 2 else cmd[:, 1:2]
-    behavior = env._wtw_behavior_params
-    frequencies = behavior["gait_frequency"].unsqueeze(1)
-    # Frequency 0 (stand / straight-roll gait) must not inflate Raibert lead.
-    step_period = torch.where(
-        frequencies > 1e-6,
-        0.5 / frequencies.clamp_min(1e-6),
-        torch.zeros_like(frequencies),
+    err_sq = _wtw_raibert_squared_xy_err(
+        env, command_name, stance_width_cmd, stance_length_cmd, asset_cfg, gait_params
     )
+    reward = torch.sum(err_sq, dim=(1, 2))
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
-    phases = torch.abs(1.0 - gait.foot_indices * 2.0) * 1.0 - 0.5
-    y_vel_des = yaw_vel_des * stance_length_cmd / 2.0
-    desired_ys_offset = phases * y_vel_des * step_period
-    desired_ys_offset[:, 2:4] *= -1.0
-    desired_xs_offset = phases * x_vel_des * step_period
 
-    desired_ys = desired_ys + desired_ys_offset
-    desired_xs = desired_xs + desired_xs_offset
-    desired_footsteps = torch.stack((desired_xs, desired_ys), dim=2)
-    err = torch.abs(desired_footsteps - footsteps[:, :, 0:2])
-    reward = torch.sum(torch.square(err), dim=(1, 2))
+def wtw_raibert_heuristic_imbalance(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    stance_width_cmd: float,
+    stance_length_cmd: float,
+    asset_cfg: SceneEntityCfg,
+    axis: str,
+    gait_frequency: float = 3.0,
+    gait_phase: float = 0.5,
+    gait_offset: float = 0.0,
+    gait_bound: float = 0.0,
+    gait_duration: float = 0.5,
+    kappa_gait_probs: float = 0.07,
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
+    switch_gait_when_vy_yaw_zero: bool = False,
+    zero_vy_yaw_gait_frequency: float = 0.0,
+    zero_vy_yaw_gait_phase: float = 0.5,
+    zero_vy_yaw_gait_offset: float = 0.0,
+    zero_vy_yaw_gait_bound: float = 0.0,
+    zero_vy_yaw_gait_duration: float = 0.5,
+    zero_vy_yaw_kappa_gait_probs: float = 0.07,
+    footswing_height_cmd: float = 0.19,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
+) -> torch.Tensor:
+    """Std of per-leg squared Raibert error along one axis (``x`` or ``y``)."""
+    axis_idx = {"x": 0, "y": 1}.get(axis)
+    if axis_idx is None:
+        raise ValueError(f"axis must be 'x' or 'y', got {axis!r}")
+    gait_params = _gait_params_dict(
+        gait_frequency,
+        gait_phase,
+        gait_offset,
+        gait_bound,
+        gait_duration,
+        kappa_gait_probs,
+        **_gait_switch_kwargs(
+            command_name,
+            command_threshold,
+            switch_gait_when_vy_yaw_zero,
+            zero_vy_yaw_gait_frequency,
+            zero_vy_yaw_gait_phase,
+            zero_vy_yaw_gait_offset,
+            zero_vy_yaw_gait_bound,
+            zero_vy_yaw_gait_duration,
+            zero_vy_yaw_kappa_gait_probs,
+            footswing_height_cmd,
+            zero_vy_yaw_footswing_height_cmd,
+            scale_gait_frequency_by_vy,
+            gait_frequency_vy_coef,
+            footswing_height_curriculum_start_scale,
+            footswing_height_curriculum_end_it,
+            num_steps_per_iter,
+        ),
+    )
+    err_sq = _wtw_raibert_squared_xy_err(
+        env, command_name, stance_width_cmd, stance_length_cmd, asset_cfg, gait_params
+    )
+    # Population std: values are already squared errors.
+    reward = err_sq[:, :, axis_idx].std(dim=1, unbiased=False)
     return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
@@ -515,6 +598,77 @@ def wtw_feet_clearance_cmd_linear(
     swing_mask = 1.0 - gait.desired_contact_states
     rew = torch.square(target_height.unsqueeze(1) - foot_height) * swing_mask
     reward = torch.sum(rew, dim=1)
+    return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
+
+
+def wtw_feet_clearance_cmd_linear_imbalance(
+    env: ManagerBasedRLEnv,
+    footswing_height_cmd: float,
+    asset_cfg: SceneEntityCfg,
+    foot_radius: float = 0.02,
+    gait_frequency: float = 3.0,
+    gait_phase: float = 0.5,
+    gait_offset: float = 0.0,
+    gait_bound: float = 0.0,
+    gait_duration: float = 0.5,
+    kappa_gait_probs: float = 0.07,
+    command_name: str = "base_velocity",
+    zero_when_vy_yaw_zero: bool = False,
+    command_threshold: float = 1e-3,
+    switch_gait_when_vy_yaw_zero: bool = False,
+    zero_vy_yaw_gait_frequency: float = 0.0,
+    zero_vy_yaw_gait_phase: float = 0.5,
+    zero_vy_yaw_gait_offset: float = 0.0,
+    zero_vy_yaw_gait_bound: float = 0.0,
+    zero_vy_yaw_gait_duration: float = 0.5,
+    zero_vy_yaw_kappa_gait_probs: float = 0.07,
+    zero_vy_yaw_footswing_height_cmd: float = 0.0,
+    scale_gait_frequency_by_vy: bool = False,
+    gait_frequency_vy_coef: float = 0.5,
+    footswing_height_curriculum_start_scale: float | None = None,
+    footswing_height_curriculum_end_it: int = 2500,
+    num_steps_per_iter: int = 24,
+) -> torch.Tensor:
+    """Variance of per-leg clearance error (target minus actual, all four legs).
+
+    Actual clearance is hub height minus wheel radius. Target is commanded swing
+    height in swing and 0 in stance (wheel on ground ⇒ hub at ``foot_radius``).
+    Stance/swing uses gait ``desired_contact_states`` (1 = stance).
+    """
+    gait_params = _gait_params_dict(
+        gait_frequency,
+        gait_phase,
+        gait_offset,
+        gait_bound,
+        gait_duration,
+        kappa_gait_probs,
+        **_gait_switch_kwargs(
+            command_name,
+            command_threshold,
+            switch_gait_when_vy_yaw_zero,
+            zero_vy_yaw_gait_frequency,
+            zero_vy_yaw_gait_phase,
+            zero_vy_yaw_gait_offset,
+            zero_vy_yaw_gait_bound,
+            zero_vy_yaw_gait_duration,
+            zero_vy_yaw_kappa_gait_probs,
+            footswing_height_cmd,
+            zero_vy_yaw_footswing_height_cmd,
+            scale_gait_frequency_by_vy,
+            gait_frequency_vy_coef,
+            footswing_height_curriculum_start_scale,
+            footswing_height_curriculum_end_it,
+            num_steps_per_iter,
+        ),
+    )
+    gait = _update_wtw_gait_state(env, gait_params)
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    actual_clearance = foot_z - foot_radius
+    swing_frac = 1.0 - gait.desired_contact_states
+    target_clearance = swing_frac * env._wtw_behavior_params["footswing_height_cmd"].unsqueeze(1)
+    per_leg = target_clearance - actual_clearance
+    reward = per_leg.var(dim=1, unbiased=False)
     return _apply_wtw_vy_yaw_gate(env, reward, command_name, zero_when_vy_yaw_zero, command_threshold)
 
 
