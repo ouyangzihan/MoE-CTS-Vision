@@ -329,13 +329,21 @@ def disable_command_range_curriculum(command_cfg) -> None:
         command_cfg.command_range_curriculum = []
 
 
+STAND_STILL_JOINT_PENALTY_TERMS = (
+    "hip_pos_penalty_l1",
+    "joint_pos_penalty_l1",
+    "hip_pos_penalty_l1_leg_var",
+    "joint_pos_penalty_l1_leg_var",
+)
+
+
 def _set_stand_cmd_idxs(env_cfg: ManagerBasedRLEnvCfg, *, pose_velocity: bool) -> None:
     """Match stand-still penalty indices to the active command layout."""
     idxs = [0, 1] if pose_velocity else [1, 2]
     rewards = getattr(env_cfg, "rewards", None)
     if rewards is None:
         return
-    for term_name in ("hip_pos_penalty_l1", "joint_pos_penalty_l1"):
+    for term_name in STAND_STILL_JOINT_PENALTY_TERMS:
         term = getattr(rewards, term_name, None)
         if term is not None and "stand_cmd_idxs" in term.params:
             term.params["stand_cmd_idxs"] = idxs
@@ -778,6 +786,23 @@ class RewardsCfg:
             "boost_scale": 2.0,
         },
     )
+    # Penalize residual motion when the matching axis command is near zero.
+    # Weight magnitude is 1.0 for later tuning; sign is negative (penalty).
+    zero_cmd_lin_vel_x = RewTerm(
+        func=mdp.zero_command_axis_motion,
+        weight=-1.0,
+        params={"axis": "vx", "command_name": "base_velocity", "command_threshold": 0.05},
+    )
+    zero_cmd_lin_vel_y = RewTerm(
+        func=mdp.zero_command_axis_motion,
+        weight=-1.0,
+        params={"axis": "vy", "command_name": "base_velocity", "command_threshold": 0.05},
+    )
+    zero_cmd_ang_vel_z = RewTerm(
+        func=mdp.zero_command_axis_motion,
+        weight=-1.0,
+        params={"axis": "yaw", "command_name": "base_velocity", "command_threshold": 0.05},
+    )
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-1.0)#-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.025)#-0.05)
     base_tilt_angle = RewTerm(func=mdp.base_tilt_angle, weight=0.0)
@@ -898,6 +923,31 @@ class RewardsCfg:
             "stand_still_scale": 10.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": True,
+        },
+    )
+    # Variance of 1s temporal-mean per-leg hip / thigh+calf L1 penalties.
+    hip_pos_penalty_l1_leg_var = RewTerm(
+        func=mdp.joint_pos_penalty_l1_leg_var,
+        weight=-0.2,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
+            "stand_still_scale": 10.0,
+            "stand_cmd_idxs": [0, 1],
+            "require_flat_terrain": True,
+            "window_s": 1.0,
+        },
+    )
+    joint_pos_penalty_l1_leg_var = RewTerm(
+        func=mdp.joint_pos_penalty_l1_leg_var,
+        weight=-0.2,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
+            "stand_still_scale": 10.0,
+            "stand_cmd_idxs": [0, 1],
+            "require_flat_terrain": True,
+            "window_s": 1.0,
         },
     )
     terrain_level_progress = RewTerm(func=mdp.terrain_level_progress, weight=6.)
@@ -1037,8 +1087,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "terrain_level_progress",
-            "initial_weight": 10.0,
-            "final_weight": 5.0,
+            "initial_weight": 0.0,
+            "final_weight": 0.0,
             "start_it": 0,
             "end_it": 2500,
         },

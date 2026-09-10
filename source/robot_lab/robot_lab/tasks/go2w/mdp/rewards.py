@@ -13,7 +13,9 @@ import torch
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.sensors import ContactSensor, RayCaster
+from isaaclab.utils.buffers import CircularBuffer
 from isaaclab.utils.math import quat_apply, quat_apply_inverse
+from robot_lab.tasks.go2.mdp.utils import is_robot_on_terrain
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -176,6 +178,35 @@ def dont_wait(
         + (actual_vx < 0.0).float()
         + (actual_vx < reverse_threshold).float()
     )
+
+
+def zero_command_axis_motion(
+    env: ManagerBasedRLEnv,
+    axis: str,
+    command_name: str = "base_velocity",
+    command_threshold: float = 0.05,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize body-frame motion on ``axis`` when that axis command is near zero.
+
+    Returns ``|actual|`` when ``|command| < command_threshold``, else 0. Command
+    layout is ``(vx, vy, yaw)`` or ``(vx, yaw)``; a missing ``vy`` command is 0.
+    ``axis`` is ``"vx"``, ``"vy"``, or ``"yaw"``.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    if axis == "vx":
+        command = cmd[:, 0]
+        actual = asset.data.root_lin_vel_b[:, 0]
+    elif axis == "vy":
+        command = cmd[:, 1] if cmd.shape[-1] > 2 else torch.zeros(env.num_envs, device=env.device)
+        actual = asset.data.root_lin_vel_b[:, 1]
+    elif axis == "yaw":
+        command = cmd[:, -1]
+        actual = asset.data.root_ang_vel_b[:, 2]
+    else:
+        raise ValueError(f"Unsupported axis '{axis}'. Expected 'vx', 'vy', or 'yaw'.")
+    return torch.abs(actual) * (command.abs() < command_threshold).float()
 
 
 def feet_regulation(
@@ -503,3 +534,114 @@ class terrain_level_progress(ManagerTermBase):
         self._prev_max_move_distance.copy_(new_max)
         # Compensate RewardManager's ``* dt`` so episode sum ≈ coverage fraction.
         return delta / (self._half_terrain_length * env.step_dt)
+
+
+_LEG_PREFIXES = ("FL", "FR", "RL", "RR")
+
+
+def _joint_ids_as_list(joint_ids: Sequence[int] | slice, num_joints: int) -> list[int]:
+    if isinstance(joint_ids, slice):
+        return list(range(num_joints))[joint_ids]
+    return list(joint_ids)
+
+
+def _leg_index_for_joints(asset: Articulation, joint_ids: Sequence[int]) -> torch.Tensor:
+    """Map each selected joint to a leg slot ``FL=0, FR=1, RL=2, RR=3``."""
+    prefixes = [asset.joint_names[jid].split("_", 1)[0] for jid in joint_ids]
+    missing = set(_LEG_PREFIXES) - set(prefixes)
+    unknown = set(prefixes) - set(_LEG_PREFIXES)
+    if missing or unknown:
+        raise ValueError(
+            "Per-leg joint penalty expects joints from all four legs "
+            f"{_LEG_PREFIXES}, got prefixes {sorted(set(prefixes))}."
+        )
+    return torch.tensor(
+        [_LEG_PREFIXES.index(prefix) for prefix in prefixes],
+        device=asset.device,
+        dtype=torch.long,
+    )
+
+
+def _per_leg_joint_pos_penalty_l1(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    joint_ids: torch.Tensor,
+    leg_index: torch.Tensor,
+    command_name: str,
+    stand_still_scale: float,
+    stand_cmd_idxs: Sequence[int],
+    require_flat_terrain: bool,
+) -> torch.Tensor:
+    """Per-leg L1 joint-pos penalty matching ``joint_pos_penalty_l1``.
+
+    Returns shape ``(num_envs, 4)``. Each leg is the sum of absolute default-pose
+    errors over the joints selected for that leg (hip: one joint; thigh+calf: two).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    abs_err = torch.abs(
+        asset.data.joint_pos[:, joint_ids] - asset.data.default_joint_pos[:, joint_ids]
+    )
+    per_leg = torch.zeros(env.num_envs, len(_LEG_PREFIXES), device=env.device, dtype=abs_err.dtype)
+    per_leg.scatter_add_(1, leg_index.unsqueeze(0).expand(env.num_envs, -1), abs_err)
+
+    cmd = torch.linalg.norm(env.command_manager.get_command(command_name)[:, stand_cmd_idxs], dim=1)
+    stand_still_mask = cmd < 0.001
+    if require_flat_terrain:
+        stand_still_mask = torch.logical_and(stand_still_mask, is_robot_on_terrain(env, "flat", asset_cfg.name))
+    scale = torch.where(stand_still_mask, stand_still_scale, 1.0)
+    return per_leg * scale.unsqueeze(1)
+
+
+class joint_pos_penalty_l1_leg_var(ManagerTermBase):
+    """Penalize variance of per-leg temporal-mean L1 joint-pos penalties.
+
+    Each control step records the same per-joint L1 default-pose error used by
+    ``joint_pos_penalty_l1``, summed within each of the four legs. The reward is
+    the population variance across the four legs of those values averaged over
+    the last ``window_s`` seconds (or the episode so far if shorter).
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        asset_cfg: SceneEntityCfg = cfg.params["asset_cfg"]
+        asset: Articulation = env.scene[asset_cfg.name]
+        joint_ids = _joint_ids_as_list(asset_cfg.joint_ids, asset.num_joints)
+        self._joint_ids = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
+        self._leg_index = _leg_index_for_joints(asset, joint_ids)
+
+        window_s = float(cfg.params.get("window_s", 1.0))
+        history_len = max(1, int(round(window_s / env.step_dt)))
+        self._history = CircularBuffer(history_len, env.num_envs, env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        self._history.reset(env_ids)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        asset_cfg: SceneEntityCfg,
+        stand_still_scale: float,
+        stand_cmd_idxs: list[int] = [0, 1, 2],
+        require_flat_terrain: bool = True,
+        window_s: float = 1.0,
+    ) -> torch.Tensor:
+        del window_s
+        per_leg = _per_leg_joint_pos_penalty_l1(
+            env,
+            asset_cfg,
+            self._joint_ids,
+            self._leg_index,
+            command_name,
+            stand_still_scale,
+            stand_cmd_idxs,
+            require_flat_terrain,
+        )
+        self._history.append(per_leg)
+
+        history = self._history.buffer
+        lengths = self._history.current_length
+        history_len = self._history.max_length
+        valid = torch.arange(history_len, device=env.device).unsqueeze(0) >= (history_len - lengths).unsqueeze(1)
+        temporal_mean = (history * valid.unsqueeze(-1)).sum(dim=1) / lengths.clamp_min(1).unsqueeze(-1)
+        return torch.var(temporal_mean, dim=1, correction=0)

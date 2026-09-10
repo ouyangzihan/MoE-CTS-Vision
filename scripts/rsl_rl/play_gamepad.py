@@ -26,6 +26,8 @@ Flat-plane tasks (e.g. RobotLab-Go2W-Symmetry-v1) do not use a terrain generator
 
 Example:
     python scripts/rsl_rl/play_gamepad.py --task=RobotLab-Go2W-D435i-v0 --terrain_type stairs_up --terrain_level 5
+    python scripts/rsl_rl/play_gamepad.py --task=RobotLab-Go2W-D435i-v0 --terrain_type stairs_up --terrain_level 5 \\
+        --disable_camera
     python scripts/rsl_rl/play_gamepad.py --task=RobotLab-Go2-v0 --terrain_type flat --terrain_level 0 \\
         --lin_vel_x 1.5 --lin_vel_y 0.8 --ang_vel_z 1.2
     python scripts/rsl_rl/play_gamepad.py --task=RobotLab-Go2W-Symmetry-v1
@@ -121,6 +123,14 @@ parser.add_argument(
     default=False,
     help="Enable Hiking-style edge-target PoseVelocityCommand (flat-patch goals).",
 )
+parser.add_argument(
+    "--disable_camera",
+    action="store_true",
+    default=False,
+    help="Disable the front depth camera and block depth images to the policy "
+    "(constant far-plane fill, same as deploy with no camera). "
+    "Viewport camera follow (gamepad X) is unchanged.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -179,6 +189,91 @@ _CAMERA_LOOKAT_B = (0.5, 0.0, 0.3)
 # Training defaults are typically horizontal_scale=0.1, vertical_scale=0.005.
 _PLAY_TERRAIN_HORIZONTAL_SCALE = .01  # 5x training
 _PLAY_TERRAIN_VERTICAL_SCALE = .0005  # 5x training
+
+# Depth groups whose camera input can be blocked by --disable_camera.
+_DEPTH_OBS_GROUPS = ("depth", "clean_depth")
+
+
+def _far_plane_depth_image(
+    env,
+    sensor_cfg=None,
+    data_type: str = "distance_to_image_plane",
+    image_shape: tuple[int, int] | None = None,
+    max_depth: float = 10.0,
+    normalize: bool = True,
+    use_delay: bool = True,
+    enable_noise: bool = False,
+    enable_augmentation: bool | None = None,
+    use_history_stack: bool = True,
+    num_output_frames: int | None = None,
+    noise_std: float = 0.0,
+    dropout_prob: float = 0.0,
+    depth_dependent_noise_scale: float = 0.0,
+    edge_speckle_prob: float = 0.0,
+    temporal_flicker_std: float = 0.0,
+    hole_blob_prob: float = 0.0,
+    hole_blob_size_range: tuple[int, int] = (3, 12),
+    use_cfg_noise_overrides: bool = False,
+    dropout_fill_value: float | None = None,
+    randomize_dropout_fill_value: bool = False,
+) -> torch.Tensor:
+    """Constant far-plane depth with the same layout as ``process_depth_image``.
+
+    History-stack and normalized single-frame terms both emit 1.0 at far plane
+    before the observation manager clip/scale. ``sensor_cfg`` is unused.
+    """
+    del (
+        sensor_cfg,
+        data_type,
+        max_depth,
+        normalize,
+        use_delay,
+        enable_noise,
+        enable_augmentation,
+        noise_std,
+        dropout_prob,
+        depth_dependent_noise_scale,
+        edge_speckle_prob,
+        temporal_flicker_std,
+        hole_blob_prob,
+        hole_blob_size_range,
+        use_cfg_noise_overrides,
+        dropout_fill_value,
+        randomize_dropout_fill_value,
+    )
+    height, width = image_shape if image_shape is not None else (60, 60)
+    frames = int(num_output_frames) if use_history_stack and num_output_frames else 1
+    return torch.ones((env.num_envs, frames * height * width), device=env.device)
+
+
+def _disable_front_depth_camera(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg) -> None:
+    """Drop the depth sensor and replace depth obs with far-plane constants."""
+    scene = getattr(env_cfg, "scene", None)
+    camera_cfg = getattr(scene, "front_depth_camera", None) if scene is not None else None
+    observations = getattr(env_cfg, "observations", None)
+    replaced = []
+    if observations is not None:
+        for group_name in _DEPTH_OBS_GROUPS:
+            group = getattr(observations, group_name, None)
+            term = getattr(group, "depth_image", None) if group is not None else None
+            if term is None:
+                continue
+            # Avoid ObservationManager resolving SceneEntityCfg("front_depth_camera").
+            params = dict(getattr(term, "params", None) or {})
+            params["sensor_cfg"] = None
+            term.params = params
+            term.func = _far_plane_depth_image
+            replaced.append(group_name)
+    if camera_cfg is None and not replaced:
+        print("[WARN] --disable_camera: no front depth camera / depth obs on this task; ignoring.")
+        return
+    if scene is not None and hasattr(scene, "front_depth_camera"):
+        scene.front_depth_camera = None
+    groups = ", ".join(replaced) if replaced else "(none)"
+    print(
+        f"[INFO] Depth camera disabled: front_depth_camera not spawned; "
+        f"policy depth groups [{groups}] filled with far-plane (1.0 pre-scale)."
+    )
 
 
 def _estimate_ground_z(
@@ -552,6 +647,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             front_depth_camera.rpy_randomization_deg = None
         if hasattr(front_depth_camera, "randomize_rot_on_reset"):
             front_depth_camera.randomize_rot_on_reset = False
+
+    if args_cli.disable_camera:
+        _disable_front_depth_camera(env_cfg)
 
     # disable randomization for play
     env_cfg.observations.policy.enable_corruption = False

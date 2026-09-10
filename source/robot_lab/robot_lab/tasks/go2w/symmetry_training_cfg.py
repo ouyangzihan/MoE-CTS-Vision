@@ -17,6 +17,7 @@ from robot_lab.tasks.go2.rsl_rl_cfg import MoECTSSymmetryRunnerCfg, RslRlMoeCtsA
 from robot_lab.tasks.go2w.env_cfg import (
     BASE_HEIGHT_TARGET,
     FOOT_LINK_NAME,
+    STAND_STILL_JOINT_PENALTY_TERMS,
     WHEEL_RADIUS,
     Go2WEnvSymmetryCfg,
     Go2WSceneCfg,
@@ -38,7 +39,7 @@ WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
 _WTW_FOOTSWING_HEIGHT_CMD = 0.04
 
 _WTW_GAIT_TIMING_PARAMS = {
-    "gait_frequency": 1.5,
+    "gait_frequency": 1.0,
     "gait_phase": 0.5,
     "gait_offset": 0.0,
     "gait_bound": 0.0,
@@ -47,9 +48,9 @@ _WTW_GAIT_TIMING_PARAMS = {
     "footswing_height_cmd": _WTW_FOOTSWING_HEIGHT_CMD,
     # freq = base * (0.5 * |vy| + 1); planted gait (freq=0) stays planted.
     "scale_gait_frequency_by_vy": True,
-    "gait_frequency_vy_coef": 1.0,
+    "gait_frequency_vy_coef": 3.0,
     # Footswing: 20% of base at iter 0 → 100% by iter 2500 (num_steps_per_iter=24).
-    "footswing_height_curriculum_start_scale": 0.5,
+    "footswing_height_curriculum_start_scale": 1,
     "footswing_height_curriculum_end_it": 2500,
     "num_steps_per_iter": 24,
 }
@@ -111,7 +112,7 @@ class Go2WFlatSceneCfg(Go2WSceneCfg):
 
 def disable_stand_still_terrain_gate(rewards) -> None:
     """Trigger ``stand_still_scale`` from command only (no procedural ``flat`` column)."""
-    for term_name in ("hip_pos_penalty_l1", "joint_pos_penalty_l1"):
+    for term_name in STAND_STILL_JOINT_PENALTY_TERMS:
         term = getattr(rewards, term_name, None)
         if term is not None:
             term.params["require_flat_terrain"] = False
@@ -143,6 +144,30 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
             "stand_still_scale": 10.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
+        },
+    )
+    hip_pos_penalty_l1_leg_var = RewTerm(
+        func=mdp.joint_pos_penalty_l1_leg_var,
+        weight=-0.2,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
+            "stand_still_scale": 10.0,
+            "stand_cmd_idxs": [0, 1],
+            "require_flat_terrain": False,
+            "window_s": 1.0,
+        },
+    )
+    joint_pos_penalty_l1_leg_var = RewTerm(
+        func=mdp.joint_pos_penalty_l1_leg_var,
+        weight=-0.2,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
+            "stand_still_scale": 10.0,
+            "stand_cmd_idxs": [0, 1],
+            "require_flat_terrain": False,
+            "window_s": 1.0,
         },
     )
 
@@ -302,6 +327,8 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0
         self.rewards.feet_regulation.weight = -0.05
+        self.rewards.action_rate_l2.weight = -0.05
+        self.rewards.action_smoothness_l2.weight = -0.05
         if getattr(self.curriculum, "terrain_level_progress", None) is not None:
             self.curriculum.terrain_level_progress = None
         if getattr(self.curriculum, "local_terrain_tilt_angle", None) is not None:
