@@ -124,9 +124,10 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
 
     # Plane terrain has no generator columns; bake the flag into static params so Hydra
     # ``to_dict`` / ``from_dict`` cannot fall back to the function default (True).
+    # Half of ``RobotLab-Go2W-D435i-v0`` (``RewardsCfg``: -0.04 / -0.008).
     hip_pos_penalty_l1 = RewTerm(
         func=mdp.joint_pos_penalty_l1,
-        weight=-0.04,
+        weight=-0.02,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
@@ -137,7 +138,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
     )
     joint_pos_penalty_l1 = RewTerm(
         func=mdp.joint_pos_penalty_l1,
-        weight=-0.008,
+        weight=-0.004,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
@@ -323,6 +324,13 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         self.rewards.dont_wait = None
         self.rewards.wheels_not_in_contact = None
         self.rewards.local_terrain_tilt_angle = None
+        # Half of D435i-v0 curriculum (initial -0.04/-0.008 → final -0.75/-0.15).
+        if getattr(self.curriculum, "hip_pos_penalty_l1", None) is not None:
+            self.curriculum.hip_pos_penalty_l1.params["initial_weight"] = -0.04
+            self.curriculum.hip_pos_penalty_l1.params["final_weight"] = -0.1
+        if getattr(self.curriculum, "joint_pos_penalty_l1", None) is not None:
+            self.curriculum.joint_pos_penalty_l1.params["initial_weight"] = -0.008
+            self.curriculum.joint_pos_penalty_l1.params["final_weight"] = -0.02
         self.rewards.base_tilt_angle.weight = -0.5
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0
