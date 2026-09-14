@@ -1111,6 +1111,16 @@ class CurriculumCfg:
     )
 
 
+@configclass
+class Go2WSymmetryCurriculumCfg(CurriculumCfg):
+    """Shorter reward-weight ramps for ``RobotLab-Go2W-Symmetry-v1``."""
+
+    def __post_init__(self):
+        self.joint_pos_penalty_l1.params["end_it"] = 2000
+        self.hip_pos_penalty_l1.params["end_it"] = 2000
+        self.base_linear_velocity.params["end_it"] = 500
+
+
 ##
 # Environment configuration
 ##
@@ -1289,3 +1299,4 @@ class Go2WEnvSymmetryCfg(Go2WEnvCfg):
     """Environment configuration with symmetry augmentation for MoE CTS."""
 
     scene: Go2WSceneCfg = Go2WSceneCfg(num_envs=8192, env_spacing=0.5)
+    curriculum: Go2WSymmetryCurriculumCfg = Go2WSymmetryCurriculumCfg()
