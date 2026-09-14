@@ -48,7 +48,12 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
-from utils import export_cts_policy_as_jit, export_cts_policy_as_onnx, export_cts_cnn_gru_policy_as_jit
+from utils import (
+    export_cts_cnn_gru_policy_as_jit,
+    export_cts_policy_as_jit,
+    export_cts_policy_as_onnx,
+    log_moe_gating,
+)
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Play an RSL-RL agent with a Logitech F710 gamepad.")
@@ -729,6 +734,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         policy_nn = runner.alg.policy
     except AttributeError:
         policy_nn = runner.alg.actor_critic
+    log_moe_gating(policy_nn)
 
     if hasattr(policy_nn, "actor_obs_normalizer"):
         normalizer = policy_nn.actor_obs_normalizer

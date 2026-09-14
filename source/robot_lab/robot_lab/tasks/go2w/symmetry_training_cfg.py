@@ -1,7 +1,7 @@
 """Training configs for ``RobotLab-Go2W-Symmetry-v1``.
 
 Flat plane terrain (GPU savings), Walk These Ways augmented auxiliary rewards,
-and sparse top-2 MoE gating for blind proprioceptive training.
+and sparse top-3 MoE gating for blind proprioceptive training.
 """
 
 from __future__ import annotations
@@ -314,9 +314,9 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         cmd.command_range_max.lin_vel_y = (-0.75, 0.75)
         cmd.command_range_max.ang_vel_yaw = (-1.5, 1.5)
         # vx/yaw: 70% 0, 10% max, 10% min, 10% uniform; vy: 20% 0, 5% max, 5% min, 70% uniform.
-        cmd.axis_zero_prob = (0.7, 0.2, 0.7)
-        cmd.axis_max_prob = (0.1, 0.05, 0.1)
-        cmd.axis_min_prob = (0.1, 0.05, 0.1)
+        cmd.axis_zero_prob = (0.45, 0.45, 0.45)
+        cmd.axis_max_prob = (0.1, 0.0, 0.1)
+        cmd.axis_min_prob = (0.1, 0.0, 0.1)
 
         # No terrain mesh / curriculum on a plane.
         self.curriculum.terrain_levels = None
@@ -363,7 +363,7 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
 
 @configclass
 class Go2WSparseMoeCtsActorCriticCfg(RslRlMoeCtsActorCriticCfg):
-    """Student MoE with top-2 sparse gating (30 other experts inactive per forward)."""
+    """Student MoE with top-3 sparse gating (9 other experts get zero gate weight)."""
 
     expert_num = 12
     gating_top_k = 3

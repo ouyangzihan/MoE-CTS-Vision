@@ -55,14 +55,14 @@ class ActorCriticMoECTS(nn.Module):
         critic_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
         teacher_encoder_hidden_dims: tuple[int] | list[int] = [512, 256],
         student_encoder_hidden_dims: tuple[int] | list[int] = [512, 256, 128],
-        expert_num: int = 8,
+        expert_num: int = 12,
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         state_dependent_std: bool = False,
         latent_dim: int = 32,
         norm_type: str = 'l2norm',
-        gating_top_k: int | None = None,
+        gating_top_k: int | None = 3,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:

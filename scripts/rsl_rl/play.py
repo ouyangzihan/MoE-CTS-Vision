@@ -23,7 +23,12 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
-from utils import export_cts_policy_as_jit, export_cts_policy_as_onnx, export_cts_cnn_gru_policy_as_jit
+from utils import (
+    export_cts_cnn_gru_policy_as_jit,
+    export_cts_policy_as_jit,
+    export_cts_policy_as_onnx,
+    log_moe_gating,
+)
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -263,6 +268,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     except AttributeError:
         # version 2.2 and below
         policy_nn = runner.alg.actor_critic
+    log_moe_gating(policy_nn)
 
     # extract the normalizer
     if hasattr(policy_nn, "actor_obs_normalizer"):

@@ -1276,9 +1276,9 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
         super().__post_init__()
         # vx: 25% 0, 25% max, 25% min, 25% uniform; vy/yaw: 70% 0, 10% max, 10% min, 10% uniform.
         cmd = self.commands.base_velocity
-        cmd.axis_zero_prob = (0.25, 0.7, 0.7)
-        cmd.axis_max_prob = (0.25, 0.1, 0.1)
-        cmd.axis_min_prob = (0.25, 0.1, 0.1)
+        cmd.axis_zero_prob = (0.4, 0.5, 0.5)
+        cmd.axis_max_prob = (0.15, 0.1, 0.1)
+        cmd.axis_min_prob = (0.15, 0.1, 0.1)
         if self.scene.front_depth_camera is not None:
             self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
         self.apply_mgdp_depth_aux_settings()

@@ -32,6 +32,9 @@ class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
         self.algorithm.symmetry_cfg = Go2WMoeCtsSymmetryCfg()
         # Offline MoE CTS L/R data augmentation (batch doubling).
         self.algorithm.symmetry_cfg.use_symmetric_augmentation = True
+        # Match flat WTW: 12 experts, sparse top-3 (do not inherit a dense 64-wide student).
+        self.policy.expert_num = 12
+        self.policy.gating_top_k = 3
         # Defaults when Go2WD435iEnvCfg.use_mgdp_depth_aux is enabled via train.py sync.
         # Leave coefs at 0 here so the current pipeline is unchanged until the env switch is on.
         self.policy.enable_depth_aux = False

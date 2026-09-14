@@ -8,6 +8,18 @@ import os
 import sys
 
 
+def log_moe_gating(policy: object) -> None:
+    """Print student MoE width and sparse top-k used for play/export."""
+    encoder = getattr(policy, "student_moe_encoder", None)
+    moe = getattr(encoder, "moe", None) if encoder is not None else None
+    if moe is None:
+        return
+    expert_num = int(moe.expert_num)
+    gating_top_k = int(moe.gating_top_k)
+    mode = "sparse" if gating_top_k < expert_num else "dense"
+    print(f"[INFO] MoE student gating: expert_num={expert_num}, gating_top_k={gating_top_k} ({mode})")
+
+
 def resolve_cts_single_obs_feature_dims(num_single_obs: int, num_actions: int) -> list[int]:
     """Infer per-term dims for CTS single_obs history layout.
 

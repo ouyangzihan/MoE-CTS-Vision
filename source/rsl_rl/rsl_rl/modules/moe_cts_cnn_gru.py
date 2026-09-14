@@ -222,7 +222,8 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         critic_hidden_dims: tuple[int] | list[int] = (512, 256, 128),
         teacher_encoder_hidden_dims: tuple[int] | list[int] = (512, 256),
         student_encoder_hidden_dims: tuple[int] | list[int] = (512, 256, 256),
-        expert_num: int = 8,
+        expert_num: int = 12,
+        gating_top_k: int | None = 3,
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
@@ -314,6 +315,7 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
             output_dim=latent_dim,
             activation=activation,
             norm_type=norm_type,
+            gating_top_k=gating_top_k,
         )
         print(f"Student CNN-GRU: {self.student_cnn_gru}")
         print(f"Teacher Encoder: {self.teacher_encoder}")
