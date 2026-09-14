@@ -763,7 +763,8 @@
   </joint>
 
   <joint name="front_camera_joint" type="fixed">
-    <origin rpy="0 0 0" xyz="0.32715 -0.00003 0.04297" />
+    <origin rpy="0 0 0" xyz="0.354 -0.00003 0.018" />
+    <!-- <origin rpy="0 0 0" xyz="0.32715 -0.00003 0.04297" /> -->
       <parent link="base" />
       <child link="front_camera" />
   </joint>

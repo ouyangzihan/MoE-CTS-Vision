@@ -52,7 +52,7 @@ D435I_HORIZONTAL_FOV_DEG = 87.0
 D435I_VERTICAL_FOV_DEG = 58.0
 D435I_FOV_RANDOMIZATION_DEG = 3.0
 D435I_PRINCIPAL_POINT_RANDOMIZATION_PX = 1.0
-D435I_DEPTH_MAX = 2.5
+D435I_DEPTH_MAX = 1.0
 D435I_DEPTH_IMAGE_SHAPE = (D435I_DEPTH_HEIGHT, D435I_DEPTH_WIDTH)
 D435I_GAUSSIAN_BLUR_SIGMA = 1.0
 D435I_GAUSSIAN_BLUR_KERNEL_SIZE = 3
@@ -66,7 +66,10 @@ D435I_CAMERA_MIN_DELAY_FRAMES = 2
 D435I_CAMERA_MAX_DELAY_FRAMES = 6
 D435I_CAMERA_MIN_DELAY = D435I_CAMERA_MIN_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
 D435I_CAMERA_MAX_DELAY = D435I_CAMERA_MAX_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
-D435I_CAMERA_POS_BASE = (0.3264636, -0.00003, 0.0947706)
+# Final D435i sensor pose relative to the Go2W base frame. The position is the
+# composed URDF chain: base -> front_camera -> camera_base -> camera_d435
+# (front_camera_joint xyz="0.354 -0.00003 0.018" in go2w_d435i.urdf).
+D435I_CAMERA_POS_BASE = (0.3533136, -0.00003, 0.0698006)
 D435I_CAMERA_POS_RANDOMIZATION_M = 0.01
 D435I_CAMERA_ROT_BASE = (0.9612616959383189, 0.0, 0.27563735581699916, 0.0)
 D435I_CAMERA_RPY_RANDOMIZATION_DEG = 3.0
@@ -283,13 +286,13 @@ def make_legacy_go2rl_gym_command_cfg() -> mdp.Go2RLGymCommandCfg:
     lin_vel = (-0.75, 0.75)
     ang_vel = (-1.5, 1.5)
     return mdp.Go2RLGymCommandCfg(
-        resampling_time=5.0,
-        resampling_time_range=(5.0, 5.0),
+        resampling_time=10.0,
+        resampling_time_range=(10.0, 10.0),
         dynamic_resample_commands=False,
         independent_axis_mixture=True,
         axis_zero_prob=0.6,
-        axis_max_prob=0.05,
-        axis_min_prob=0.05,
+        axis_max_prob=0.15,
+        axis_min_prob=0.15,
         zero_command_curriculum=None,
         limit_vel_prob=0.0,
         limit_ang_vel_at_zero_command_prob=0.0,

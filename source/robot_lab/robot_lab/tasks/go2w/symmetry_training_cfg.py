@@ -30,11 +30,11 @@ WTW_JUMP_WEIGHT = 100.0
 WTW_ORIENTATION_CONTROL_WEIGHT = -20.0 # -5.0
 WTW_RAIBERT_HEURISTIC_WEIGHT = -10.0
 WTW_RAIBERT_HEURISTIC_IMBALANCE_X_WEIGHT = -15
-WTW_RAIBERT_HEURISTIC_IMBALANCE_Y_WEIGHT = -15
+WTW_RAIBERT_HEURISTIC_IMBALANCE_Y_WEIGHT = -0
 WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT = -30.0
 WTW_FEET_CLEARANCE_CMD_LINEAR_IMBALANCE_WEIGHT = -10 # -40
-WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 4.0
-WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
+WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 10.0
+WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 10.0
 
 _WTW_FOOTSWING_HEIGHT_CMD = 0.04
 
@@ -48,7 +48,7 @@ _WTW_GAIT_TIMING_PARAMS = {
     "footswing_height_cmd": _WTW_FOOTSWING_HEIGHT_CMD,
     # freq = base * (0.5 * |vy| + 1); planted gait (freq=0) stays planted.
     "scale_gait_frequency_by_vy": True,
-    "gait_frequency_vy_coef": 3.0,
+    "gait_frequency_vy_coef": 2.5,
     # Footswing: 20% of base at iter 0 → 100% by iter 2500 (num_steps_per_iter=24).
     "footswing_height_curriculum_start_scale": 1,
     "footswing_height_curriculum_end_it": 2500,
@@ -131,7 +131,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
-            "stand_still_scale": 10.0,
+            "stand_still_scale": 20.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
         },
@@ -142,7 +142,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
-            "stand_still_scale": 10.0,
+            "stand_still_scale": 20.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
         },
@@ -153,7 +153,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
-            "stand_still_scale": 10.0,
+            "stand_still_scale": 20.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
             "window_s": 1.0,
@@ -165,7 +165,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
-            "stand_still_scale": 10.0,
+            "stand_still_scale": 20.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
             "window_s": 1.0,
@@ -313,6 +313,10 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         cmd.command_range_max.lin_vel_x = (-1.5, 1.5)
         cmd.command_range_max.lin_vel_y = (-0.75, 0.75)
         cmd.command_range_max.ang_vel_yaw = (-1.5, 1.5)
+        # vx/yaw: 70% 0, 10% max, 10% min, 10% uniform; vy: 20% 0, 5% max, 5% min, 70% uniform.
+        cmd.axis_zero_prob = (0.7, 0.2, 0.7)
+        cmd.axis_max_prob = (0.1, 0.05, 0.1)
+        cmd.axis_min_prob = (0.1, 0.05, 0.1)
 
         # No terrain mesh / curriculum on a plane.
         self.curriculum.terrain_levels = None
@@ -327,10 +331,10 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         # Half of D435i-v0 curriculum (initial -0.04/-0.008 → final -0.75/-0.15).
         if getattr(self.curriculum, "hip_pos_penalty_l1", None) is not None:
             self.curriculum.hip_pos_penalty_l1.params["initial_weight"] = -0.04
-            self.curriculum.hip_pos_penalty_l1.params["final_weight"] = -0.1
+            self.curriculum.hip_pos_penalty_l1.params["final_weight"] = -0.2
         if getattr(self.curriculum, "joint_pos_penalty_l1", None) is not None:
             self.curriculum.joint_pos_penalty_l1.params["initial_weight"] = -0.008
-            self.curriculum.joint_pos_penalty_l1.params["final_weight"] = -0.02
+            self.curriculum.joint_pos_penalty_l1.params["final_weight"] = -0.04
         self.rewards.base_tilt_angle.weight = -0.5
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0

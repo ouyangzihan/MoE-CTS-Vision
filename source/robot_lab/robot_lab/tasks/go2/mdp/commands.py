@@ -279,6 +279,16 @@ class Go2RLGymCommand(CommandTerm):
         self.commands_xy_accumulation[env_ids] += self.commands[env_ids, :2]
         self.time_since_resample[env_ids] = 0.0
 
+    @staticmethod
+    def _axis_mixture_prob_triple(value: float | Sequence[float]) -> tuple[float, float, float]:
+        """Broadcast a scalar or validate a ``(vx, vy, yaw)`` probability triple."""
+        if isinstance(value, (int, float)):
+            v = float(value)
+            return (v, v, v)
+        if len(value) != 3:
+            raise ValueError(f"Expected 3 axis mixture probabilities (vx, vy, yaw), got {len(value)}")
+        return (float(value[0]), float(value[1]), float(value[2]))
+
     def _resample_independent_axis_mixture(self, env_ids: Sequence[int]) -> None:
         """Sample vx, vy, yaw independently (zero / max / min / uniform-in-range)."""
         if isinstance(env_ids, torch.Tensor):
@@ -287,12 +297,13 @@ class Go2RLGymCommand(CommandTerm):
             n = len(env_ids)
         if n == 0:
             return
-        zero_p = float(self.cfg.axis_zero_prob)
-        max_p = float(self.cfg.axis_max_prob)
-        min_p = float(self.cfg.axis_min_prob)
-        max_cut = zero_p + max_p
-        min_cut = max_cut + min_p
+        zero_ps = self._axis_mixture_prob_triple(self.cfg.axis_zero_prob)
+        max_ps = self._axis_mixture_prob_triple(self.cfg.axis_max_prob)
+        min_ps = self._axis_mixture_prob_triple(self.cfg.axis_min_prob)
         for axis, key in ((0, "lin_vel_x"), (1, "lin_vel_y"), (2, "ang_vel_yaw")):
+            zero_p = zero_ps[axis]
+            max_cut = zero_p + max_ps[axis]
+            min_cut = max_cut + min_ps[axis]
             low = self.env_command_ranges[key][env_ids, 0]
             high = self.env_command_ranges[key][env_ids, 1]
             u = torch.rand(n, device=self.device)
@@ -455,12 +466,15 @@ class Go2RLGymCommandCfg(CommandTermCfg):
     """Sample commands with low bounds"""
     independent_axis_mixture: bool = False
     """If True, sample vx/vy/yaw independently and skip all-zero / limit-vel overrides."""
-    axis_zero_prob: float = 0.5
-    """Per-axis probability of sampling exactly 0 when ``independent_axis_mixture`` is on."""
-    axis_max_prob: float = 0.15
-    """Per-axis probability of sampling the current range maximum."""
-    axis_min_prob: float = 0.15
-    """Per-axis probability of sampling the current range minimum.
+    axis_zero_prob: float | tuple[float, float, float] = 0.5
+    """Probability of sampling exactly 0 when ``independent_axis_mixture`` is on.
+
+    Scalar broadcasts to all axes; a triple is ``(vx, vy, yaw)``.
+    """
+    axis_max_prob: float | tuple[float, float, float] = 0.15
+    """Probability of sampling the current range maximum (scalar or ``(vx, vy, yaw)``)."""
+    axis_min_prob: float | tuple[float, float, float] = 0.15
+    """Probability of sampling the current range minimum (scalar or ``(vx, vy, yaw)``).
 
     Remaining probability is uniform in ``[min, max]``.
     """
