@@ -250,16 +250,32 @@ def feet_regulation(
     return (lateral_vel_sq * torch.exp(-feet_height / (0.025 * base_height_target))).sum(dim=-1)
 
 
-def wheels_not_in_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+def wheels_not_in_contact(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    command_threshold: float = 0.05,
+) -> torch.Tensor:
     """Penalize wheels that are not in contact with any surface.
 
     Returns the number of selected bodies whose net contact force stays below
     ``threshold`` over the contact-sensor history (airborne wheel count).
+
+    Zeroed when ``vy`` or yaw command is non-zero, so the term is only active
+    for pure ``vx`` or all-zero commands. Layout is ``(vx, vy, yaw)`` or
+    ``(vx, yaw)``; a missing ``vy`` command is treated as 0.
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     net_contact_forces = contact_sensor.data.net_forces_w_history
     is_contact = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold
-    return torch.sum(~is_contact, dim=1).float()
+    reward = torch.sum(~is_contact, dim=1).float()
+
+    cmd = env.command_manager.get_command(command_name)
+    vy = cmd[:, 1] if cmd.shape[-1] > 2 else torch.zeros(env.num_envs, device=env.device)
+    yaw = cmd[:, -1]
+    pure_vx_or_stand = (vy.abs() <= command_threshold) & (yaw.abs() <= command_threshold)
+    return reward * pure_vx_or_stand.float()
 
 
 def wheel_lateral_drag(

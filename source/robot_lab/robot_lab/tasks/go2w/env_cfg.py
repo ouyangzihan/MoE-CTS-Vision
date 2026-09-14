@@ -864,7 +864,12 @@ class RewardsCfg:
     wheels_not_in_contact = RewTerm(
         func=mdp.wheels_not_in_contact,
         weight=-.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME), "threshold": 1.0},
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
+            "threshold": 1.0,
+            "command_name": "base_velocity",
+            "command_threshold": 0.05,
+        },
     )
     # Penalize sideways (body-y) slip at contacting wheels; curriculum ramps to -0.08.
     wheel_lateral_drag = RewTerm(
@@ -1269,6 +1274,11 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # vx: 25% 0, 25% max, 25% min, 25% uniform; vy/yaw: 70% 0, 10% max, 10% min, 10% uniform.
+        cmd = self.commands.base_velocity
+        cmd.axis_zero_prob = (0.25, 0.7, 0.7)
+        cmd.axis_max_prob = (0.25, 0.1, 0.1)
+        cmd.axis_min_prob = (0.25, 0.1, 0.1)
         if self.scene.front_depth_camera is not None:
             self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
         self.apply_mgdp_depth_aux_settings()

@@ -338,7 +338,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "stairs_up": with_slope_threshold(
             RoughRandomWidthInvertedPyramidStairsTerrainCfg(
-                proportion=0.65,
+                proportion=0.6,
                 # Baked mesh range. go2w curriculum raises effective lower bound via min terrain level.
                 step_height_range=(0., 0.2),
                 step_width_range=(0.29, 0.34),
@@ -381,6 +381,6 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
             gap_width_range=(0.0, 0.9),
             platform_width=3.0,
         ),
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.05),
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
     },
 )

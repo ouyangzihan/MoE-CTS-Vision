@@ -131,7 +131,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
-            "stand_still_scale": 20.0,
+            "stand_still_scale": 10.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
         },
@@ -142,7 +142,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
-            "stand_still_scale": 20.0,
+            "stand_still_scale": 10.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
         },
@@ -153,7 +153,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
-            "stand_still_scale": 20.0,
+            "stand_still_scale": 10.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
             "window_s": 1.0,
@@ -165,7 +165,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
-            "stand_still_scale": 20.0,
+            "stand_still_scale": 10.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": False,
             "window_s": 1.0,
