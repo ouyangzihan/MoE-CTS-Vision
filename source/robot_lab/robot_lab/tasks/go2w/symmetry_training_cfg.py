@@ -33,22 +33,23 @@ WTW_RAIBERT_HEURISTIC_IMBALANCE_X_WEIGHT = -15
 WTW_RAIBERT_HEURISTIC_IMBALANCE_Y_WEIGHT = -0
 WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT = -30.0
 WTW_FEET_CLEARANCE_CMD_LINEAR_IMBALANCE_WEIGHT = -10 # -40
-WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 10.0
-WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 10.0
+WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 4.0
+WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
 
 _WTW_FOOTSWING_HEIGHT_CMD = 0.04
 
 _WTW_GAIT_TIMING_PARAMS = {
-    "gait_frequency": 1.0,
+    "gait_frequency": 1.5,
     "gait_phase": 0.5,
     "gait_offset": 0.0,
     "gait_bound": 0.0,
     "gait_duration": 0.5,
     "kappa_gait_probs": 0.07,
     "footswing_height_cmd": _WTW_FOOTSWING_HEIGHT_CMD,
-    # freq = base * (0.5 * |vy| + 1); planted gait (freq=0) stays planted.
+    # freq = base * (vy_coef * |vy| + yaw_coef * |yaw| + 1); planted gait (freq=0) stays planted.
     "scale_gait_frequency_by_vy": True,
-    "gait_frequency_vy_coef": 2.5,
+    "gait_frequency_vy_coef": 1.0,
+    "gait_frequency_yaw_coef": 0.5,
     # Footswing: 20% of base at iter 0 → 100% by iter 2500 (num_steps_per_iter=24).
     "footswing_height_curriculum_start_scale": 1,
     "footswing_height_curriculum_end_it": 2500,
@@ -314,9 +315,9 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         cmd.command_range_max.lin_vel_y = (-0.75, 0.75)
         cmd.command_range_max.ang_vel_yaw = (-1.5, 1.5)
         # vx/yaw: 70% 0, 10% max, 10% min, 10% uniform; vy: 20% 0, 5% max, 5% min, 70% uniform.
-        cmd.axis_zero_prob = (0.45, 0.45, 0.45)
-        cmd.axis_max_prob = (0.1, 0.0, 0.1)
-        cmd.axis_min_prob = (0.1, 0.0, 0.1)
+        cmd.axis_zero_prob = (0.5, 0.5, 0.5)
+        cmd.axis_max_prob = (0.1, 0.1, 0.1)
+        cmd.axis_min_prob = (0.1, 0.1, 0.1)
 
         # No terrain mesh / curriculum on a plane.
         self.curriculum.terrain_levels = None
@@ -339,8 +340,8 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0
         self.rewards.feet_regulation.weight = -0.05
-        self.rewards.action_rate_l2.weight = -0.05
-        self.rewards.action_smoothness_l2.weight = -0.05
+        self.rewards.action_rate_l2.weight = -0.1
+        self.rewards.action_smoothness_l2.weight = -0.1
         if getattr(self.curriculum, "terrain_level_progress", None) is not None:
             self.curriculum.terrain_level_progress = None
         if getattr(self.curriculum, "local_terrain_tilt_angle", None) is not None:

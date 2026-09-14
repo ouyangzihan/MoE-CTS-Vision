@@ -7,7 +7,7 @@ overridden via reward-term params. When ``switch_gait_when_vy_yaw_zero`` is set,
 envs with both vy and yaw ~0 use the ``zero_vy_yaw_*`` gait targets instead.
 
 Optional behaviors (enabled from ``symmetry_training_cfg``):
-- ``scale_gait_frequency_by_vy``: target freq = base * (coef * |vy| + 1).
+- ``scale_gait_frequency_by_vy``: target freq = base * (vy_coef * |vy| + yaw_coef * |yaw| + 1).
 - ``footswing_height_curriculum_start_scale``: linear ramp of swing height to full
   by ``footswing_height_curriculum_end_it`` learning iterations.
 """
@@ -63,6 +63,7 @@ def _gait_params_dict(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -87,6 +88,7 @@ def _gait_params_dict(
         "zero_vy_yaw_footswing_height_cmd": zero_vy_yaw_footswing_height_cmd,
         "scale_gait_frequency_by_vy": scale_gait_frequency_by_vy,
         "gait_frequency_vy_coef": gait_frequency_vy_coef,
+        "gait_frequency_yaw_coef": gait_frequency_yaw_coef,
         "footswing_height_curriculum_start_scale": footswing_height_curriculum_start_scale,
         "footswing_height_curriculum_end_it": footswing_height_curriculum_end_it,
         "num_steps_per_iter": num_steps_per_iter,
@@ -156,15 +158,21 @@ def _resolve_behavior_params(env: ManagerBasedRLEnv, params: dict) -> dict[str, 
             override_t = torch.full((env.num_envs,), override, device=env.device)
             resolved[key] = torch.where(stand_mask, override_t, resolved[key])
 
-    # Target frequency = base * (coef * |vy| + 1). Planted gait (freq≈0) stays planted.
+    # Target frequency = base * (vy_coef * |vy| + yaw_coef * |yaw| + 1).
+    # Planted gait (freq≈0) stays planted.
     if params.get("scale_gait_frequency_by_vy", False):
         cmd = env.command_manager.get_command(command_name)
         if cmd.shape[1] > 2:
             vy_abs = cmd[:, 1].abs()
+            yaw_abs = cmd[:, -1].abs()
         else:
             vy_abs = torch.zeros(env.num_envs, device=env.device)
-        coef = float(params.get("gait_frequency_vy_coef", 0.5))
-        resolved["gait_frequency"] = resolved["gait_frequency"] * (coef * vy_abs + 1.0)
+            yaw_abs = cmd[:, -1].abs()
+        vy_coef = float(params.get("gait_frequency_vy_coef", 0.5))
+        yaw_coef = float(params.get("gait_frequency_yaw_coef", 0.0))
+        resolved["gait_frequency"] = resolved["gait_frequency"] * (
+            vy_coef * vy_abs + yaw_coef * yaw_abs + 1.0
+        )
 
     return resolved
 
@@ -329,6 +337,7 @@ def _gait_switch_kwargs(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -347,6 +356,7 @@ def _gait_switch_kwargs(
         "zero_vy_yaw_footswing_height_cmd": zero_vy_yaw_footswing_height_cmd,
         "scale_gait_frequency_by_vy": scale_gait_frequency_by_vy,
         "gait_frequency_vy_coef": gait_frequency_vy_coef,
+        "gait_frequency_yaw_coef": gait_frequency_yaw_coef,
         "footswing_height_curriculum_start_scale": footswing_height_curriculum_start_scale,
         "footswing_height_curriculum_end_it": footswing_height_curriculum_end_it,
         "num_steps_per_iter": num_steps_per_iter,
@@ -425,6 +435,7 @@ def wtw_raibert_heuristic(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -451,6 +462,7 @@ def wtw_raibert_heuristic(
             zero_vy_yaw_footswing_height_cmd,
             scale_gait_frequency_by_vy,
             gait_frequency_vy_coef,
+            gait_frequency_yaw_coef,
             footswing_height_curriculum_start_scale,
             footswing_height_curriculum_end_it,
             num_steps_per_iter,
@@ -489,6 +501,7 @@ def wtw_raibert_heuristic_imbalance(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -518,6 +531,7 @@ def wtw_raibert_heuristic_imbalance(
             zero_vy_yaw_footswing_height_cmd,
             scale_gait_frequency_by_vy,
             gait_frequency_vy_coef,
+            gait_frequency_yaw_coef,
             footswing_height_curriculum_start_scale,
             footswing_height_curriculum_end_it,
             num_steps_per_iter,
@@ -555,6 +569,7 @@ def wtw_feet_clearance_cmd_linear(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -586,6 +601,7 @@ def wtw_feet_clearance_cmd_linear(
             zero_vy_yaw_footswing_height_cmd,
             scale_gait_frequency_by_vy,
             gait_frequency_vy_coef,
+            gait_frequency_yaw_coef,
             footswing_height_curriculum_start_scale,
             footswing_height_curriculum_end_it,
             num_steps_per_iter,
@@ -625,6 +641,7 @@ def wtw_feet_clearance_cmd_linear_imbalance(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -656,6 +673,7 @@ def wtw_feet_clearance_cmd_linear_imbalance(
             zero_vy_yaw_footswing_height_cmd,
             scale_gait_frequency_by_vy,
             gait_frequency_vy_coef,
+            gait_frequency_yaw_coef,
             footswing_height_curriculum_start_scale,
             footswing_height_curriculum_end_it,
             num_steps_per_iter,
@@ -696,6 +714,7 @@ def wtw_tracking_contacts_shaped_force(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -724,6 +743,7 @@ def wtw_tracking_contacts_shaped_force(
             zero_vy_yaw_footswing_height_cmd,
             scale_gait_frequency_by_vy,
             gait_frequency_vy_coef,
+            gait_frequency_yaw_coef,
             footswing_height_curriculum_start_scale,
             footswing_height_curriculum_end_it,
             num_steps_per_iter,
@@ -770,6 +790,7 @@ def wtw_tracking_contacts_shaped_vel(
     zero_vy_yaw_footswing_height_cmd: float = 0.0,
     scale_gait_frequency_by_vy: bool = False,
     gait_frequency_vy_coef: float = 0.5,
+    gait_frequency_yaw_coef: float = 0.0,
     footswing_height_curriculum_start_scale: float | None = None,
     footswing_height_curriculum_end_it: int = 2500,
     num_steps_per_iter: int = 24,
@@ -796,6 +817,7 @@ def wtw_tracking_contacts_shaped_vel(
             zero_vy_yaw_footswing_height_cmd,
             scale_gait_frequency_by_vy,
             gait_frequency_vy_coef,
+            gait_frequency_yaw_coef,
             footswing_height_curriculum_start_scale,
             footswing_height_curriculum_end_it,
             num_steps_per_iter,
