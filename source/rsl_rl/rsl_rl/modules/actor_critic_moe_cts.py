@@ -113,6 +113,10 @@ class ActorCriticMoECTS(nn.Module):
             gating_top_k=gating_top_k,
         )
         print(f"Student MoE Encoder: {self.student_moe_encoder}")
+        print(
+            f"[INFO] Student MoE gating: expert_num={self.student_moe_encoder.moe.expert_num}, "
+            f"gating_top_k={self.student_moe_encoder.moe.gating_top_k}"
+        )
         
         # Actor
         self.state_dependent_std = state_dependent_std

@@ -314,10 +314,12 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         cmd.command_range_max.lin_vel_x = (-1.5, 1.5)
         cmd.command_range_max.lin_vel_y = (-0.75, 0.75)
         cmd.command_range_max.ang_vel_yaw = (-1.5, 1.5)
-        # vx/yaw: 70% 0, 10% max, 10% min, 10% uniform; vy: 20% 0, 5% max, 5% min, 70% uniform.
-        cmd.axis_zero_prob = (0.5, 0.5, 0.5)
-        cmd.axis_max_prob = (0.1, 0.1, 0.1)
-        cmd.axis_min_prob = (0.1, 0.1, 0.1)
+        # Active-count mixture: 5% none, 60% one, 30% two, 5% all three.
+        # Active axes: 25% range max, 25% range min, 50% uniform; then |cmd|<0.05 → 0.
+        cmd.axis_active_count_prob = (0.05, 0.60, 0.30, 0.05)
+        cmd.axis_max_prob = (0.25, 0.25, 0.25)
+        cmd.axis_min_prob = (0.25, 0.25, 0.25)
+        cmd.axis_deadzone = 0.05
 
         # No terrain mesh / curriculum on a plane.
         self.curriculum.terrain_levels = None

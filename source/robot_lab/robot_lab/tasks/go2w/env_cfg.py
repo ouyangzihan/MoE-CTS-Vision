@@ -52,9 +52,9 @@ D435I_HORIZONTAL_FOV_DEG = 87.0
 D435I_VERTICAL_FOV_DEG = 58.0
 D435I_FOV_RANDOMIZATION_DEG = 3.0
 D435I_PRINCIPAL_POINT_RANDOMIZATION_PX = 1.0
-D435I_DEPTH_MAX = 1.0
+D435I_DEPTH_MAX = 2.5
 D435I_DEPTH_IMAGE_SHAPE = (D435I_DEPTH_HEIGHT, D435I_DEPTH_WIDTH)
-D435I_GAUSSIAN_BLUR_SIGMA = 1.0
+D435I_GAUSSIAN_BLUR_SIGMA = 0.0
 D435I_GAUSSIAN_BLUR_KERNEL_SIZE = 3
 D435I_DEPTH_NUM_OUTPUT_FRAMES = 4
 D435I_DEPTH_HISTORY_SKIP_FRAMES = 5
@@ -706,8 +706,8 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "stiffness_distribution_params": (0.8, 1.25),
-            "damping_distribution_params": (0.8, 1.25),
+            "stiffness_distribution_params": (0.9, 1.1),
+            "damping_distribution_params": (0.9, 1.1),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -739,8 +739,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.2, 1.5),
-            "dynamic_friction_range": (0.2, 1.5),
+            "static_friction_range": (0.0, 2.0),
+            "dynamic_friction_range": (0.0, 2.0),
             "restitution_range": (0.0, 0.5),
             "num_buckets": 64,
             "make_consistent": True,
@@ -1056,7 +1056,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.4, #-0.3
+            "final_weight": -0., #-0.3
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1284,11 +1284,13 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        # vx: 25% 0, 25% max, 25% min, 25% uniform; vy/yaw: 70% 0, 10% max, 10% min, 10% uniform.
+        # Active-count mixture: 5% none, 60% one, 30% two, 5% all three.
+        # Active axes: 25% range max, 25% range min, 50% uniform; then |cmd|<0.05 → 0.
         cmd = self.commands.base_velocity
-        cmd.axis_zero_prob = (0.4, 0.5, 0.5)
-        cmd.axis_max_prob = (0.15, 0.1, 0.1)
-        cmd.axis_min_prob = (0.15, 0.1, 0.1)
+        cmd.axis_active_count_prob = (0.05, 0.60, 0.30, 0.05)
+        cmd.axis_max_prob = (0.25, 0.25, 0.25)
+        cmd.axis_min_prob = (0.25, 0.25, 0.25)
+        cmd.axis_deadzone = 0.05
         if self.scene.front_depth_camera is not None:
             self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
         self.apply_mgdp_depth_aux_settings()

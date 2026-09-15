@@ -184,6 +184,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
               f"height={getattr(getattr(agent_cfg, 'algorithm', None), 'height_recon_coef', None)}, "
               f"align={getattr(getattr(agent_cfg, 'algorithm', None), 'depth_align_coef', None)})")
 
+    # Re-apply after Hydra from_dict so D435i cannot inherit a dense 64-wide student.
+    if hasattr(agent_cfg, "apply_moe_gating"):
+        agent_cfg.apply_moe_gating()
+    policy_cfg = getattr(agent_cfg, "policy", None)
+    if policy_cfg is not None and hasattr(policy_cfg, "expert_num"):
+        print(
+            "[INFO] MoE student cfg: "
+            f"expert_num={policy_cfg.expert_num}, gating_top_k={getattr(policy_cfg, 'gating_top_k', None)}"
+        )
+
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations

@@ -32,9 +32,7 @@ class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
         self.algorithm.symmetry_cfg = Go2WMoeCtsSymmetryCfg()
         # Offline MoE CTS L/R data augmentation (batch doubling).
         self.algorithm.symmetry_cfg.use_symmetric_augmentation = True
-        # Match flat WTW: 12 experts, sparse top-3 (do not inherit a dense 64-wide student).
-        self.policy.expert_num = 12
-        self.policy.gating_top_k = 3
+        self.apply_moe_gating()
         # Defaults when Go2WD435iEnvCfg.use_mgdp_depth_aux is enabled via train.py sync.
         # Leave coefs at 0 here so the current pipeline is unchanged until the env switch is on.
         self.policy.enable_depth_aux = False
@@ -47,6 +45,11 @@ class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
             2 * self.algorithm.num_learning_epochs * self.algorithm.num_mini_batches
         )
         self.algorithm.redo_cfg.reset_end_step = self.max_iterations * grad_steps_per_iter
+
+    def apply_moe_gating(self) -> None:
+        """Pin 12-expert top-3 after Hydra ``from_dict`` (same pattern as MGDP obs flags)."""
+        self.policy.expert_num = 12
+        self.policy.gating_top_k = 3
 
 
 @configclass

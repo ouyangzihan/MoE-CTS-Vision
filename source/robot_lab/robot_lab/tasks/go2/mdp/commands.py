@@ -289,12 +289,28 @@ class Go2RLGymCommand(CommandTerm):
             raise ValueError(f"Expected 3 axis mixture probabilities (vx, vy, yaw), got {len(value)}")
         return (float(value[0]), float(value[1]), float(value[2]))
 
-    def _resample_independent_axis_mixture(self, env_ids: Sequence[int]) -> None:
-        """Sample vx, vy, yaw independently (zero / max / min / uniform-in-range)."""
+    @staticmethod
+    def _axis_active_count_prob_quad(value: Sequence[float]) -> tuple[float, float, float, float]:
+        """Validate and normalize ``(p0, p1, p2, p3)`` active-axis count probabilities."""
+        if len(value) != 4:
+            raise ValueError(f"Expected 4 active-count probabilities (0, 1, 2, 3 axes), got {len(value)}")
+        probs = (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+        total = sum(probs)
+        if total <= 0.0:
+            raise ValueError("axis_active_count_prob must sum to a positive value")
+        return (probs[0] / total, probs[1] / total, probs[2] / total, probs[3] / total)
+
+    def _resample_env_ids_count(self, env_ids: Sequence[int]) -> int:
         if isinstance(env_ids, torch.Tensor):
-            n = int(env_ids.sum()) if env_ids.dtype == torch.bool else int(env_ids.numel())
-        else:
-            n = len(env_ids)
+            return int(env_ids.sum()) if env_ids.dtype == torch.bool else int(env_ids.numel())
+        return len(env_ids)
+
+    def _resample_independent_axis_mixture(self, env_ids: Sequence[int]) -> None:
+        """Sample vx, vy, yaw (zero / max / min / uniform-in-range)."""
+        if self.cfg.axis_active_count_prob is not None:
+            self._resample_active_count_axis_mixture(env_ids)
+            return
+        n = self._resample_env_ids_count(env_ids)
         if n == 0:
             return
         zero_ps = self._axis_mixture_prob_triple(self.cfg.axis_zero_prob)
@@ -314,6 +330,48 @@ class Go2RLGymCommand(CommandTerm):
                 torch.where(u < max_cut, high, torch.where(u < min_cut, low, uniform)),
             )
             self.commands[env_ids, axis] = sampled
+
+    def _resample_active_count_axis_mixture(self, env_ids: Sequence[int]) -> None:
+        """Sample how many axes are active, then max / min / uniform on those axes."""
+        n = self._resample_env_ids_count(env_ids)
+        if n == 0:
+            return
+        p0, p1, p2, _p3 = self._axis_active_count_prob_quad(self.cfg.axis_active_count_prob)
+        u_count = torch.rand(n, device=self.device)
+        k = torch.zeros(n, dtype=torch.long, device=self.device)
+        k = torch.where(u_count >= p0, torch.ones(n, dtype=torch.long, device=self.device), k)
+        k = torch.where(u_count >= (p0 + p1), torch.full((n,), 2, dtype=torch.long, device=self.device), k)
+        k = torch.where(u_count >= (p0 + p1 + p2), torch.full((n,), 3, dtype=torch.long, device=self.device), k)
+
+        axis_choice = torch.randint(0, 3, (n,), device=self.device)
+        chosen = torch.zeros(n, 3, dtype=torch.bool, device=self.device)
+        chosen.scatter_(1, axis_choice.unsqueeze(1), torch.ones(n, 1, dtype=torch.bool, device=self.device))
+        active = torch.zeros(n, 3, dtype=torch.bool, device=self.device)
+        k1 = (k == 1).unsqueeze(1)
+        k2 = (k == 2).unsqueeze(1)
+        k3 = (k == 3).unsqueeze(1)
+        active = torch.where(k1, chosen, active)
+        active = torch.where(k2, ~chosen, active)
+        active = torch.where(k3, torch.ones_like(active), active)
+
+        max_ps = self._axis_mixture_prob_triple(self.cfg.axis_max_prob)
+        min_ps = self._axis_mixture_prob_triple(self.cfg.axis_min_prob)
+        sampled = torch.zeros(n, 3, dtype=self.commands.dtype, device=self.device)
+        zeros = torch.zeros(n, device=self.device, dtype=self.commands.dtype)
+        for axis, key in ((0, "lin_vel_x"), (1, "lin_vel_y"), (2, "ang_vel_yaw")):
+            low = self.env_command_ranges[key][env_ids, 0]
+            high = self.env_command_ranges[key][env_ids, 1]
+            u = torch.rand(n, device=self.device)
+            uniform = low + (high - low) * torch.rand(n, device=self.device)
+            max_cut = max_ps[axis]
+            min_cut = max_cut + min_ps[axis]
+            axis_val = torch.where(u < max_cut, high, torch.where(u < min_cut, low, uniform))
+            sampled[:, axis] = torch.where(active[:, axis], axis_val, zeros)
+
+        deadzone = float(self.cfg.axis_deadzone)
+        if deadzone > 0.0:
+            sampled = torch.where(sampled.abs() < deadzone, torch.zeros_like(sampled), sampled)
+        self.commands[env_ids] = sampled
 
     def _update_command(self):
         current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self._env.scene.env_origins[:, :2], dim=1)
@@ -466,18 +524,31 @@ class Go2RLGymCommandCfg(CommandTermCfg):
     """Sample commands with low bounds"""
     independent_axis_mixture: bool = False
     """If True, sample vx/vy/yaw independently and skip all-zero / limit-vel overrides."""
+    axis_active_count_prob: tuple[float, float, float, float] | None = None
+    """If set, sample how many of ``(vx, vy, yaw)`` are active: ``(p0, p1, p2, p3)``.
+
+    Inactive axes are 0. When 1 or 2 axes are active, the subset is uniform among
+    combinations of that size. ``axis_zero_prob`` is ignored in this mode.
+    """
     axis_zero_prob: float | tuple[float, float, float] = 0.5
     """Probability of sampling exactly 0 when ``independent_axis_mixture`` is on.
 
-    Scalar broadcasts to all axes; a triple is ``(vx, vy, yaw)``.
+    Scalar broadcasts to all axes; a triple is ``(vx, vy, yaw)``. Unused when
+    ``axis_active_count_prob`` is set.
     """
     axis_max_prob: float | tuple[float, float, float] = 0.15
-    """Probability of sampling the current range maximum (scalar or ``(vx, vy, yaw)``)."""
+    """Probability of sampling the current range maximum (scalar or ``(vx, vy, yaw)``).
+
+    With ``axis_active_count_prob``, this applies only to active axes.
+    """
     axis_min_prob: float | tuple[float, float, float] = 0.15
     """Probability of sampling the current range minimum (scalar or ``(vx, vy, yaw)``).
 
-    Remaining probability is uniform in ``[min, max]``.
+    Remaining probability is uniform in ``[min, max]``. With ``axis_active_count_prob``,
+    this applies only to active axes.
     """
+    axis_deadzone: float = 0.0
+    """Force any sampled axis with ``abs(value) < axis_deadzone`` to 0 (m/s or rad/s)."""
     limit_vel_invert_when_continuous: bool = True
     """Invert the limit logic when using continuous sample limit velocity commands"""
 

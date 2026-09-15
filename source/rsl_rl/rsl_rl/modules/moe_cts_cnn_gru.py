@@ -320,6 +320,11 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         print(f"Student CNN-GRU: {self.student_cnn_gru}")
         print(f"Teacher Encoder: {self.teacher_encoder}")
         print(f"Student MoE Encoder: {self.student_moe_encoder}")
+        print(
+            "[INFO] Student MoE gating: "
+            f"expert_num={self.student_moe_encoder.moe.expert_num}, "
+            f"gating_top_k={self.student_moe_encoder.moe.gating_top_k}"
+        )
 
         self.state_dependent_std = state_dependent_std
         actor_input_dim = latent_dim + self.num_single_obs
