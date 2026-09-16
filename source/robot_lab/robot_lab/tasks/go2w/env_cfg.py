@@ -920,7 +920,7 @@ class RewardsCfg:
     )
     wheel_slip_ratio = RewTerm(
         func=mdp.wheel_slip_ratio,
-        weight=-0.03,
+        weight=-0.0001, # -0.03
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME, preserve_order=True),
@@ -1093,7 +1093,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0., #-0.3
+            "final_weight": -0.001, #-0.3
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1132,8 +1132,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "terrain_level_progress",
-            "initial_weight": 0.0,
-            "final_weight": 0.0,
+            "initial_weight": 0.0001,
+            "final_weight": 0.0001,
             "start_it": 0,
             "end_it": 2500,
         },
