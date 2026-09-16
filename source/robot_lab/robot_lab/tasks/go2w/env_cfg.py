@@ -73,6 +73,25 @@ D435I_CAMERA_POS_BASE = (0.3533136, -0.00003, 0.0698006)
 D435I_CAMERA_POS_RANDOMIZATION_M = 0.01
 D435I_CAMERA_ROT_BASE = (0.9612616959383189, 0.0, 0.27563735581699916, 0.0)
 D435I_CAMERA_RPY_RANDOMIZATION_DEG = 3.0
+# Intel D400 post-process (same knobs as rl_sar moe_cts_d435i/config.yaml).
+# Disparity fx uses native 424-wide stream so spatial/temporal delta=20 matches deploy.
+D435I_RS_FILTERS_ENABLE = True
+D435I_RS_USE_SPATIAL = True
+D435I_RS_SPATIAL_MAGNITUDE = 2
+D435I_RS_SPATIAL_ALPHA = 0.5
+D435I_RS_SPATIAL_DELTA = 20.0
+D435I_RS_SPATIAL_HOLES_FILL = 4
+D435I_RS_USE_TEMPORAL = True
+D435I_RS_TEMPORAL_ALPHA = 0.4
+D435I_RS_TEMPORAL_DELTA = 20.0
+D435I_RS_TEMPORAL_PERSISTENCE = 2
+D435I_RS_USE_HOLE_FILLING = True
+D435I_RS_HOLE_FILLING_MODE = 1  # 0=left, 1=farest, 2=nearest
+D435I_RS_STEREO_BASELINE_M = 0.05
+D435I_RS_STREAM_WIDTH = 424
+D435I_RS_DISPARITY_FX = D435I_RS_STREAM_WIDTH / (
+    2.0 * math.tan(math.radians(D435I_HORIZONTAL_FOV_DEG) / 2.0)
+)
 
 LEG_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES, preserve_order=True)
 WHEEL_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES, preserve_order=True)
@@ -194,15 +213,33 @@ class Go2WD435iSceneCfg(Go2WSceneCfg):
         gaussian_blur_kernel_size=D435I_GAUSSIAN_BLUR_KERNEL_SIZE,
         enable_sensor_noise=True,
         use_env_cfg_noise_overrides=False,
-        sensor_noise_std= 0, # 0.02,
-        sensor_dropout_prob= 0, # 0.2,
-        sensor_depth_dependent_noise_scale= 0, # 0.5,
-        sensor_edge_speckle_prob= 0, # 0.04,
-        sensor_temporal_flicker_std= 0, # 0.015,
-        sensor_hole_blob_prob= 0, # 0.075,
+        sensor_noise_std= 0.01, # 0.02,
+        sensor_dropout_prob= 0.1, # 0.2,
+        sensor_depth_dependent_noise_scale= 0.25, # 0.5,
+        sensor_edge_speckle_prob= 0.02, # 0.04,
+        sensor_temporal_flicker_std= 0.075, # 0.015,
+        sensor_hole_blob_prob= 0.0375, # 0.075,
         sensor_hole_blob_size_range=(3, 12),
         sensor_randomize_dropout_fill_value=True,
         sensor_dropout_fill_value=None,
+        # RealSense D400 factory filters, after noise. Order matches deploy:
+        # disparity → spatial → temporal → depth → hole fill (decimation off).
+        enable_rs_filters=D435I_RS_FILTERS_ENABLE,
+        rs_use_spatial=D435I_RS_USE_SPATIAL,
+        rs_spatial_magnitude=D435I_RS_SPATIAL_MAGNITUDE,
+        rs_spatial_alpha=D435I_RS_SPATIAL_ALPHA,
+        rs_spatial_delta=D435I_RS_SPATIAL_DELTA,
+        rs_spatial_holes_fill=D435I_RS_SPATIAL_HOLES_FILL,
+        rs_use_temporal=D435I_RS_USE_TEMPORAL,
+        rs_temporal_alpha=D435I_RS_TEMPORAL_ALPHA,
+        rs_temporal_delta=D435I_RS_TEMPORAL_DELTA,
+        rs_temporal_persistence=D435I_RS_TEMPORAL_PERSISTENCE,
+        rs_use_hole_filling=D435I_RS_USE_HOLE_FILLING,
+        rs_hole_filling_mode=D435I_RS_HOLE_FILLING_MODE,
+        rs_stereo_baseline_m=D435I_RS_STEREO_BASELINE_M,
+        rs_disparity_ref_width=D435I_RS_STREAM_WIDTH,
+        rs_disparity_hfov_deg=D435I_HORIZONTAL_FOV_DEG,
+        rs_disparity_fx=D435I_RS_DISPARITY_FX,
         depth_history_length=D435I_DEPTH_HISTORY_LENGTH,
         depth_num_output_frames=D435I_DEPTH_NUM_OUTPUT_FRAMES,
         depth_history_skip_frames=D435I_DEPTH_HISTORY_SKIP_FRAMES,

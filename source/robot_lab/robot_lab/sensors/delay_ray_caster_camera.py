@@ -14,6 +14,8 @@ from isaaclab.sensors.ray_caster.ray_caster_camera import RayCasterCamera
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_from_euler_xyz, quat_mul
 
+from .realsense_filters import RealSenseDepthPostprocess
+
 
 @dataclass
 class DepthNoiseRuntime:
@@ -180,6 +182,8 @@ class DelayRayCasterCamera(RayCasterCamera):
             self._processed_history_initialized[env_ids] = False
             if hasattr(self, "_prev_noisy_depth"):
                 self._prev_noisy_depth[env_ids] = 0.0
+        if getattr(self, "_rs_postprocess", None) is not None:
+            self._rs_postprocess.reset(env_ids)
 
     def _create_buffers(self):
         super()._create_buffers()
@@ -240,6 +244,36 @@ class DelayRayCasterCamera(RayCasterCamera):
                 device=self._device,
             )
             self._processed_frame_offsets = torch.flip(offsets, dims=(0,))
+
+        self._rs_postprocess = None
+        if self.cfg.enable_rs_filters:
+            image_h, image_w = tuple(self.image_shape)
+            disparity_fx = self.cfg.rs_disparity_fx
+            if disparity_fx is None:
+                # Native D435i 424-wide fx so delta=20 has the same metric meaning as deploy.
+                hfov_deg = float(self.cfg.rs_disparity_hfov_deg)
+                disparity_fx = self.cfg.rs_disparity_ref_width / (
+                    2.0 * math.tan(math.radians(hfov_deg) * 0.5)
+                )
+            self._rs_postprocess = RealSenseDepthPostprocess(
+                num_envs=self._view.count,
+                height=image_h,
+                width=image_w,
+                device=self._device,
+                use_spatial=self.cfg.rs_use_spatial,
+                spatial_magnitude=self.cfg.rs_spatial_magnitude,
+                spatial_alpha=self.cfg.rs_spatial_alpha,
+                spatial_delta=self.cfg.rs_spatial_delta,
+                spatial_holes_fill=self.cfg.rs_spatial_holes_fill,
+                use_temporal=self.cfg.rs_use_temporal,
+                temporal_alpha=self.cfg.rs_temporal_alpha,
+                temporal_delta=self.cfg.rs_temporal_delta,
+                temporal_persistence=self.cfg.rs_temporal_persistence,
+                use_hole_filling=self.cfg.rs_use_hole_filling,
+                hole_filling_mode=self.cfg.rs_hole_filling_mode,
+                stereo_baseline_m=self.cfg.rs_stereo_baseline_m,
+                disparity_fx=float(disparity_fx),
+            )
 
     def bind_env_cfg(self, env_cfg) -> None:
         """Optional hook so sensor noise curriculum can read ``env.cfg`` overrides."""
@@ -320,6 +354,9 @@ class DelayRayCasterCamera(RayCasterCamera):
                 )
                 if noise.temporal_flicker_std > 0.0:
                     self._prev_noisy_depth[env_ids] = depth_bhw
+
+        if self._rs_postprocess is not None:
+            depth_bhw = self._rs_postprocess(depth_bhw, env_ids, norm_max)
 
         if self.cfg.gaussian_blur_sigma > 0.0:
             depth_bhw = gaussian_blur_depth(
@@ -515,6 +552,25 @@ class DelayRayCasterCameraCfg(RayCasterCameraCfg):
     sensor_hole_blob_size_range: tuple[int, int] = (3, 12)
     sensor_dropout_fill_value: float | None = None
     sensor_randomize_dropout_fill_value: bool = False
+
+    # Intel librealsense D400 factory post-processing (applied after sensor noise).
+    # Order: [decimation] → disparity → spatial → temporal → depth → [hole fill].
+    enable_rs_filters: bool = False
+    rs_use_spatial: bool = True
+    rs_spatial_magnitude: int = 2
+    rs_spatial_alpha: float = 0.5
+    rs_spatial_delta: float = 20.0
+    rs_spatial_holes_fill: int = 4  # 0=none, 1..5 → 2/4/8/16/unlimited px
+    rs_use_temporal: bool = True
+    rs_temporal_alpha: float = 0.4
+    rs_temporal_delta: float = 20.0
+    rs_temporal_persistence: int = 2  # SDK: 2 = valid in 2 of last 3
+    rs_use_hole_filling: bool = True
+    rs_hole_filling_mode: int = 1  # 0=left, 1=farest, 2=nearest
+    rs_stereo_baseline_m: float = 0.05  # D435/D435i stereo baseline
+    rs_disparity_ref_width: int = 424  # native depth stream width used to derive fx
+    rs_disparity_hfov_deg: float = 87.0
+    rs_disparity_fx: float | None = None  # None → fx from ref_width and hfov
 
     depth_history_length: int = 0
     """Ring buffer length for processed depth frames. ``0`` disables history stacking."""
