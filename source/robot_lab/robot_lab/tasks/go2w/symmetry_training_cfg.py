@@ -338,6 +338,12 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         if getattr(self.curriculum, "joint_pos_penalty_l1", None) is not None:
             self.curriculum.joint_pos_penalty_l1.params["initial_weight"] = -0.008
             self.curriculum.joint_pos_penalty_l1.params["final_weight"] = -0.04
+        if getattr(self.curriculum, "track_lin_vel_xy_exp", None) is not None:
+            self.curriculum.track_lin_vel_xy_exp.params["initial_weight"] = 10.0
+            self.curriculum.track_lin_vel_xy_exp.params["final_weight"] = 10.0
+        if getattr(self.curriculum, "track_ang_vel_z_exp", None) is not None:
+            self.curriculum.track_ang_vel_z_exp.params["initial_weight"] = 5.0
+            self.curriculum.track_ang_vel_z_exp.params["final_weight"] = 5.0
         self.rewards.base_tilt_angle.weight = -0.5
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0

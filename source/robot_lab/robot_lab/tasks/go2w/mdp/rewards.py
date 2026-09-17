@@ -21,6 +21,41 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def _weighted_action_l2(diff: torch.Tensor, leg_dim: int, wheel_scale: float) -> torch.Tensor:
+    """Sum squared action terms with wheel joints scaled relative to legs."""
+    if diff.shape[1] > leg_dim:
+        scale = diff.new_ones(diff.shape[1])
+        scale[leg_dim:] = wheel_scale
+        diff = diff * scale
+    return torch.sum(diff, dim=1)
+
+
+def action_rate_l2(
+    env: ManagerBasedRLEnv,
+    leg_dim: int = 12,
+    wheel_scale: float = 0.2,
+) -> torch.Tensor:
+    """Penalize action rate; dimensions after ``leg_dim`` (wheels) use ``wheel_scale``."""
+    diff = torch.square(env.action_manager.action - env.action_manager.prev_action)
+    return _weighted_action_l2(diff, leg_dim, wheel_scale)
+
+
+def action_smoothness_l2(
+    env: ManagerBasedRLEnv,
+    leg_dim: int = 12,
+    wheel_scale: float = 0.2,
+) -> torch.Tensor:
+    """Penalize action second-difference; wheel joints use ``wheel_scale``."""
+    diff = torch.square(
+        env.action_manager.action
+        - 2 * env.action_manager.prev_action
+        + env.action_manager.prev_prev_action
+    )
+    diff = diff * (env.action_manager.prev_action != 0)
+    diff = diff * (env.action_manager.prev_prev_action != 0)
+    return _weighted_action_l2(diff, leg_dim, wheel_scale)
+
+
 def _command_resample_boost_scale(
     env: ManagerBasedRLEnv,
     command_name: str,

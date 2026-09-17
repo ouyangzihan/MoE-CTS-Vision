@@ -214,7 +214,7 @@ def step_height_range_curriculum(
     initial_lower: float = 0.0,
     upper: float = 0.2,
     mesh_lower: float = 0.0,
-    sub_terrain_names: Sequence[str] = ("stairs_up", "stairs_down"),
+    sub_terrain_names: Sequence[str] = ("stairs_up", "stairs_down", "rough_stairs_up", "rough_stairs_down"),
     num_steps_per_iter: int = 24,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> dict[str, float]:

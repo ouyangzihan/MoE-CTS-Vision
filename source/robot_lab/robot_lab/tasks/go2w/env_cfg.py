@@ -304,6 +304,8 @@ def make_pose_velocity_command_cfg() -> mdp.PoseVelocityCommandCfg:
             "rough_slope": {"lin_vel_x": (0.0, 1.5), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "stairs_up": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "stairs_down": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
+            "rough_stairs_up": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
+            "rough_stairs_down": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "obstacles": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "stepping_stones": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "gap": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
@@ -776,8 +778,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.0, 2.0),
-            "dynamic_friction_range": (0.0, 2.0),
+            "static_friction_range": (0.0, 3.0),
+            "dynamic_friction_range": (0.0, 3.0),
             "restitution_range": (0.0, 0.5),
             "num_buckets": 64,
             "make_consistent": True,
@@ -885,8 +887,16 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("height_scanner_small"),
         },
     )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
-    action_smoothness_l2 = RewTerm(func=mdp.action_smoothness_l2, weight=-0.01)
+    action_rate_l2 = RewTerm(
+        func=mdp.action_rate_l2,
+        weight=-0.01,
+        params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
+    )
+    action_smoothness_l2 = RewTerm(
+        func=mdp.action_smoothness_l2,
+        weight=-0.01,
+        params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
+    )
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-5.0, #-1.0,
@@ -920,7 +930,7 @@ class RewardsCfg:
     )
     wheel_slip_ratio = RewTerm(
         func=mdp.wheel_slip_ratio,
-        weight=-0.0001, # -0.03
+        weight=-0.000, # -0.03
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME, preserve_order=True),
@@ -1044,7 +1054,7 @@ class CurriculumCfg:
             "initial_lower": 0.0,
             "upper": 0.2,
             "mesh_lower": 0.0,
-            "sub_terrain_names": ("stairs_up", "stairs_down"),
+            "sub_terrain_names": ("stairs_up", "stairs_down", "rough_stairs_up", "rough_stairs_down"),
             "num_steps_per_iter": 24,
         },
     )
@@ -1093,7 +1103,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.001, #-0.3
+            "final_weight": -0.00, #-0.3
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1132,8 +1142,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "terrain_level_progress",
-            "initial_weight": 0.0001,
-            "final_weight": 0.0001,
+            "initial_weight": 0.000,
+            "final_weight": 0.000,
             "start_it": 0,
             "end_it": 2500,
         },
