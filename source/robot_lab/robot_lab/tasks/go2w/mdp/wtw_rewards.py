@@ -578,7 +578,7 @@ def wtw_feet_clearance_cmd_linear(
 
     ``foot_radius`` is the wheel radius for Go2W (hub ``z`` on the ground). Target hub
     height is ``footswing_height_cmd + foot_radius``. Default ``0.02`` is the WTW Go1
-    rubber foot; pass ``WHEEL_RADIUS`` (0.086) for Go2W.
+    rubber foot; pass ``WHEEL_RADIUS`` (0.087) for Go2W.
     """
     gait_params = _gait_params_dict(
         gait_frequency,

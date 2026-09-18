@@ -570,6 +570,8 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         if is_teacher:
             latent = self.teacher_latent(obs, masks=masks, hidden_state=hidden_state, update_memory=masks is None)
         else:
+            # Detached for rollout and the actor PPO step. Walking advantage reaches the
+            # CNN through MoECTS._student_encoder_ppo_surrogate on the student optimizer.
             with torch.no_grad():
                 latent, _ = self.student_latent(obs, masks=masks, hidden_state=hidden_state, update_memory=masks is None)
         self._update_distribution(torch.cat([latent, single_obs], dim=-1))

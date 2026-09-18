@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import torch
+import isaaclab.utils.math as math_utils
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.buffers import DelayBuffer
 
@@ -113,16 +114,56 @@ def _delay_manager(env: ManagerBasedEnv) -> ObservationDelayManager | None:
     return getattr(env, "obs_delay_manager", None)
 
 
+def randomize_gyro_bias(
+    env: ManagerBasedEnv,
+    env_ids: Sequence[int] | torch.Tensor | None,
+    bias_range: tuple[float, float] = (-0.05, 0.05),
+) -> None:
+    """Sample a constant per-episode additive IMU gyro bias (rad/s) at reset.
+
+    The same ``env.gyro_bias`` buffer is added to policy and ``single_obs`` so
+    history and the current frame stay consistent. Critic observations do not
+    use this term.
+    """
+    if env_ids is None:
+        env_ids_t = torch.arange(env.num_envs, device=env.device)
+    elif isinstance(env_ids, torch.Tensor):
+        env_ids_t = env_ids.to(device=env.device, dtype=torch.long)
+    else:
+        env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=env.device)
+    if env_ids_t.numel() == 0:
+        return
+
+    bias = getattr(env, "gyro_bias", None)
+    if bias is None or bias.shape != (env.num_envs, 3):
+        env.gyro_bias = torch.zeros(env.num_envs, 3, device=env.device)
+
+    env.gyro_bias[env_ids_t] = math_utils.sample_uniform(
+        bias_range[0],
+        bias_range[1],
+        (int(env_ids_t.numel()), 3),
+        device=env.device,
+    )
+
+
 def base_ang_vel_delayed(
-    env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    add_gyro_bias: bool = False,
 ) -> torch.Tensor:
-    """Root angular velocity, optionally delayed."""
+    """Root angular velocity, optionally delayed and with per-episode gyro bias."""
     mgr = _delay_manager(env)
     if mgr is None:
         from isaaclab.envs.mdp import base_ang_vel
 
-        return base_ang_vel(env, asset_cfg=asset_cfg)
-    return mgr.ang_vel
+        ang_vel = base_ang_vel(env, asset_cfg=asset_cfg)
+    else:
+        ang_vel = mgr.ang_vel
+    if add_gyro_bias:
+        bias = getattr(env, "gyro_bias", None)
+        if bias is not None:
+            ang_vel = ang_vel + bias
+    return ang_vel
 
 
 def projected_gravity_delayed(

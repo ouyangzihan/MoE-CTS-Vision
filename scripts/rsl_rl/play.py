@@ -188,6 +188,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # remove random pushing
     env_cfg.events.randomize_apply_external_force_torque = None
     env_cfg.events.randomize_push_robot = None
+    if hasattr(env_cfg.events, "randomize_gyro_bias"):
+        env_cfg.events.randomize_gyro_bias = None
     if hasattr(env_cfg, "curriculum"):
         if hasattr(env_cfg.curriculum, "command_levels_lin_vel"):
             env_cfg.curriculum.command_levels_lin_vel = None

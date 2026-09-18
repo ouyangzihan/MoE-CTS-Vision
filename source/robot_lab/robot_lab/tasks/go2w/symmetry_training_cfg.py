@@ -344,12 +344,12 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         if getattr(self.curriculum, "track_ang_vel_z_exp", None) is not None:
             self.curriculum.track_ang_vel_z_exp.params["initial_weight"] = 5.0
             self.curriculum.track_ang_vel_z_exp.params["final_weight"] = 5.0
-        self.rewards.base_tilt_angle.weight = -0.5
+        self.rewards.base_tilt_angle.weight = -3.0
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0
         self.rewards.feet_regulation.weight = -0.05
-        self.rewards.action_rate_l2.weight = -0.1
-        self.rewards.action_smoothness_l2.weight = -0.1
+        self.rewards.action_rate_l2.weight = -0.3
+        self.rewards.action_smoothness_l2.weight = -0.3
         if getattr(self.curriculum, "terrain_level_progress", None) is not None:
             self.curriculum.terrain_level_progress = None
         if getattr(self.curriculum, "local_terrain_tilt_angle", None) is not None:

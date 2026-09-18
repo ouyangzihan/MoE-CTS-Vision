@@ -352,11 +352,13 @@ def _configure_inplace_reset(env_cfg: ManagerBasedRLEnvCfg) -> None:
             mode="reset",
             params={"asset_cfg": SceneEntityCfg("robot")},
         )
-    # Keep play resets deterministic (no actuator / motor offset noise).
+    # Keep play resets deterministic (no actuator / motor offset / gyro bias).
     if hasattr(events, "randomize_actuator_gains"):
         events.randomize_actuator_gains = None
     if hasattr(events, "randomize_motor_zero_offset"):
         events.randomize_motor_zero_offset = None
+    if hasattr(events, "randomize_gyro_bias"):
+        events.randomize_gyro_bias = None
 
 
 def _apply_gamepad_command(env, command: torch.Tensor) -> None:

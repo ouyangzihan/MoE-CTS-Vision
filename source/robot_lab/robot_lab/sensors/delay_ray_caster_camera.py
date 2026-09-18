@@ -146,7 +146,13 @@ def add_depth_noise(
 
 
 class DelayRayCasterCamera(RayCasterCamera):
-    """RayCasterCamera with delay, optional sensor-level depth processing, and frame history."""
+    """RayCasterCamera with delay, optional sensor-level depth processing, and frame history.
+
+    Pipeline matches a real D435i: capture the current raycast, run noise/ISP on that
+    capture, then expose the processed stream with a per-env transport delay. The policy
+    history stack is skip-sampled from the *delayed* stream (oldest → newest), not from
+    the live capture.
+    """
 
     cfg: "DelayRayCasterCameraCfg"
 
@@ -226,7 +232,13 @@ class DelayRayCasterCamera(RayCasterCamera):
             processed_shape = tuple(self.image_shape)
 
             self._processed_shape = processed_shape
-            self._processed_history_length = int(self.cfg.depth_history_length)
+            skip = max(int(self.cfg.depth_history_skip_frames), 1)
+            skip_span = (int(self.cfg.depth_num_output_frames) - 1) * skip + 1
+            # Delay is applied at readout, so the ring must hold lag + skip-stack.
+            self._processed_history_length = max(
+                int(self.cfg.depth_history_length),
+                skip_span + self._max_delay_steps,
+            )
             self._processed_write_index = torch.zeros(self._view.count, dtype=torch.long, device=self._device)
             self._processed_history_initialized = torch.zeros(self._view.count, dtype=torch.bool, device=self._device)
             self._processed_history = torch.zeros(
@@ -384,12 +396,24 @@ class DelayRayCasterCamera(RayCasterCamera):
         self._processed_history_initialized[env_ids] = True
         self._processed_write_index[env_ids] = (write_index + 1) % self._processed_history_length
 
-    def get_depth_history_stack(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
-        """Return normalized depth history ``[B, T, H, W]`` (oldest → newest)."""
+    def get_depth_history_stack(
+        self,
+        env_ids: Sequence[int] | None = None,
+        use_delay: bool = True,
+    ) -> torch.Tensor:
+        """Return normalized depth history ``[B, T, H, W]`` (oldest → newest).
+
+        Frames are skip-sampled from the processed capture ring. When ``use_delay``
+        is set, the newest channel is ``delay_steps`` camera ticks old (sampled once
+        per episode), and older channels keep the same lag plus skip spacing — the
+        same as a delayed RealSense stream feeding the deploy ring buffer.
+        """
         if not hasattr(self, "_processed_history"):
             raise RuntimeError("Processed depth history is disabled on this camera cfg.")
         env_ids = self._resolve_env_ids(env_ids)
         latest_index = (self._processed_write_index[env_ids] - 1) % self._processed_history_length
+        if use_delay and hasattr(self, "_delay_steps"):
+            latest_index = (latest_index - self._delay_steps[env_ids]) % self._processed_history_length
         frame_indices = (
             latest_index.unsqueeze(1) - self._processed_frame_offsets.unsqueeze(0)
         ) % self._processed_history_length
@@ -421,6 +445,7 @@ class DelayRayCasterCamera(RayCasterCamera):
         self._delay_write_index[env_ids] = (write_index + 1) % self._delay_history_length
 
         if hasattr(self, "_processed_history"):
+            # ISP on the live capture; transport delay is applied in get_depth_history_stack.
             raw_depth = self._depth_to_bhw(self._raw_output["distance_to_image_plane"][env_ids])
             processed = self._apply_sensor_pipeline(raw_depth, env_ids, apply_noise=True)
             self._push_processed_history(processed, env_ids)
@@ -573,7 +598,11 @@ class DelayRayCasterCameraCfg(RayCasterCameraCfg):
     rs_disparity_fx: float | None = None  # None → fx from ref_width and hfov
 
     depth_history_length: int = 0
-    """Ring buffer length for processed depth frames. ``0`` disables history stacking."""
+    """Ring buffer length for processed depth frames. ``0`` disables history stacking.
+
+    Must fit transport delay plus the skip stack: ``max_delay_steps + (T-1)*skip + 1``.
+    The sensor expands a too-small value at buffer creation.
+    """
     depth_num_output_frames: int = 1
     depth_history_skip_frames: int = 1
 
@@ -600,12 +629,13 @@ class DelayRayCasterCameraCfg(RayCasterCameraCfg):
         if self.rpy_randomization_deg is not None and self.rpy_randomization_deg < 0.0:
             raise ValueError(f"rpy_randomization_deg must be non-negative, got {self.rpy_randomization_deg}.")
         if self.depth_history_length > 0:
-            min_history = (self.depth_num_output_frames - 1) * self.depth_history_skip_frames + 1
+            skip = max(int(self.depth_history_skip_frames), 1)
+            skip_span = (int(self.depth_num_output_frames) - 1) * skip + 1
+            sensor_dt = self.update_period if self.update_period > 0.0 else 0.0
+            max_delay_steps = int(math.floor(self.max_delay / sensor_dt + 1e-9)) if sensor_dt > 0.0 else 0
+            min_history = skip_span + max_delay_steps
             if self.depth_history_length < min_history:
-                raise ValueError(
-                    f"depth_history_length ({self.depth_history_length}) must be >= {min_history} for "
-                    f"{self.depth_num_output_frames} output frames with skip {self.depth_history_skip_frames}."
-                )
+                self.depth_history_length = min_history
 
 
 DelayRayCaster = DelayRayCasterCamera
@@ -638,8 +668,9 @@ def process_depth_image(
     """Read ray-caster depth and flatten for the policy or aux losses.
 
     When the camera maintains a processed history stack, returns ``[B, T*H*W]`` with
-    ``T`` oldest→newest frames already normalized/blurred/noised at sensor update.
-    Observation-level noise is deprecated; corruption belongs on the sensor.
+    ``T`` oldest→newest frames skip-sampled from the delayed processed stream
+    (capture → ISP → transport lag → skip). Observation-level noise is deprecated;
+    corruption belongs on the sensor.
     """
     del (
         enable_noise,
@@ -661,7 +692,7 @@ def process_depth_image(
         camera.bind_env_cfg(env.cfg)
 
     if use_history_stack and hasattr(camera, "get_depth_history_stack"):
-        depth = camera.get_depth_history_stack()
+        depth = camera.get_depth_history_stack(use_delay=use_delay)
         if num_output_frames is not None and depth.shape[1] != num_output_frames:
             raise ValueError(
                 f"Expected {num_output_frames} history frames from sensor, got {depth.shape[1]}."

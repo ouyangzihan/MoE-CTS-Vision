@@ -40,8 +40,10 @@ ALL_JOINT_NAMES = LEG_JOINT_NAMES + WHEEL_JOINT_NAMES
 
 BASE_LINK_NAME = "base"
 FOOT_LINK_NAME = ".*_foot"
-BASE_HEIGHT_TARGET = 0.408
-WHEEL_RADIUS = 0.086
+BASE_HEIGHT_TARGET = 0.409
+WHEEL_RADIUS = 0.087
+# Per-episode additive IMU gyro bias (rad/s), sampled uniformly at reset.
+GYRO_BIAS_RANGE = (-0.1, 0.1)
 
 # --- Camera ---
 D435I_DEPTH_WIDTH = 60
@@ -57,15 +59,21 @@ D435I_DEPTH_IMAGE_SHAPE = (D435I_DEPTH_HEIGHT, D435I_DEPTH_WIDTH)
 D435I_GAUSSIAN_BLUR_SIGMA = 0.0
 D435I_GAUSSIAN_BLUR_KERNEL_SIZE = 3
 D435I_DEPTH_NUM_OUTPUT_FRAMES = 4
-D435I_DEPTH_HISTORY_SKIP_FRAMES = 5
-D435I_DEPTH_HISTORY_LENGTH = (D435I_DEPTH_NUM_OUTPUT_FRAMES - 1) * D435I_DEPTH_HISTORY_SKIP_FRAMES + 1
+D435I_DEPTH_HISTORY_SKIP_FRAMES = 10
 D435I_CAMERA_UPDATE_HZ = 50.0
 D435I_CAMERA_UPDATE_PERIOD = 1.0 / D435I_CAMERA_UPDATE_HZ
-# Depth age in sensor frames @ 50 Hz (1 frame = 20 ms) → 20–60 ms.
+# Depth age in sensor frames @ 50 Hz (1 frame = 20 ms) → 40–120 ms.
+# Applied to the processed stream before skip-sampling history (real D435i lag).
 D435I_CAMERA_MIN_DELAY_FRAMES = 2
 D435I_CAMERA_MAX_DELAY_FRAMES = 6
 D435I_CAMERA_MIN_DELAY = D435I_CAMERA_MIN_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
 D435I_CAMERA_MAX_DELAY = D435I_CAMERA_MAX_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
+# Ring = transport delay + skip stack so history can be read from the delayed stream.
+D435I_DEPTH_HISTORY_LENGTH = (
+    D435I_CAMERA_MAX_DELAY_FRAMES
+    + (D435I_DEPTH_NUM_OUTPUT_FRAMES - 1) * D435I_DEPTH_HISTORY_SKIP_FRAMES
+    + 1
+)
 # Final D435i sensor pose relative to the Go2W base frame. The position is the
 # composed URDF chain: base -> front_camera -> camera_base -> camera_d435
 # (front_camera_joint xyz="0.354 -0.00003 0.018" in go2w_d435i.urdf).
@@ -507,6 +515,7 @@ class ObservationsCfg:
 
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel_delayed,
+            params={"add_gyro_bias": True},
             noise=Unoise(n_min=-0.2, n_max=0.2),
             clip=(-100.0, 100.0),
             scale=0.25,
@@ -759,6 +768,11 @@ class EventCfg:
             "offset_range": (-0.1, 0.1),
         },
     )
+    randomize_gyro_bias = EventTerm(
+        func=mdp.randomize_gyro_bias,
+        mode="reset",
+        params={"bias_range": GYRO_BIAS_RANGE},
+    )
     randomize_push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
@@ -778,8 +792,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.0, 3.0),
-            "dynamic_friction_range": (0.0, 3.0),
+            "static_friction_range": (0.0, 4.0),
+            "dynamic_friction_range": (0.0, 4.0),
             "restitution_range": (0.0, 0.5),
             "num_buckets": 64,
             "make_consistent": True,
@@ -808,24 +822,26 @@ class RewardsCfg:
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp_post_resample_boost,
-        # CurriculumCfg holds weight at 6.0 (no anneal); 2x std for 0.75s after resample.
+        # CurriculumCfg holds weight at 6.0 (no anneal); 2x std and 0.5x weight for 0.75s after resample.
         weight=6.0,
         params={
             "command_name": "base_velocity",
             "std": 0.707106781,
             "boost_duration_s": 0.75,
             "boost_scale": 2.0,
+            "weight_scale": 0.5,
         },
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp_post_resample_boost,
-        # CurriculumCfg holds weight at 3.0 (no anneal); 2x std for 0.75s after resample.
+        # CurriculumCfg holds weight at 3.0 (no anneal); 2x std and 0.5x weight for 0.75s after resample.
         weight=3.0,
         params={
             "command_name": "base_velocity",
             "std": 0.707106781,
             "boost_duration_s": 0.75,
             "boost_scale": 2.0,
+            "weight_scale": 0.5,
         },
     )
     # Penalize residual motion when the matching axis command is near zero.
@@ -935,8 +951,8 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME, preserve_order=True),
             "threshold": 1.0,
-            "wheel_radius": 0.086,
-            "contact_offset_body": (0.0, 0.0, -0.086),
+            "wheel_radius": WHEEL_RADIUS,
+            "contact_offset_body": (0.0, 0.0, -WHEEL_RADIUS),
             "terrain_static_friction": 1.0,
             "terrain_dynamic_friction": 1.0,
         },
@@ -953,7 +969,7 @@ class RewardsCfg:
             "base_height_target": BASE_HEIGHT_TARGET,
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
             "sensor_cfg": SceneEntityCfg("height_scanner_small"),
-            "wheel_radius": 0.086,
+            "wheel_radius": WHEEL_RADIUS,
         },
     )
     hip_pos_penalty_l1 = RewTerm(
@@ -962,8 +978,9 @@ class RewardsCfg:
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
+            # Scale when vy/yaw ~0; doubled when vx is also ~0.
             "stand_still_scale": 10.0,
-            # PoseVelocity command is ``(vx, yaw)``.
+            # PoseVelocity command is ``(vx, yaw)``. Gym velocity is ``(vx, vy, yaw)``.
             "stand_cmd_idxs": [0, 1],
             # Bake True for Hydra; Symmetry-v1 flat plane overrides to False.
             "require_flat_terrain": True,
@@ -987,7 +1004,7 @@ class RewardsCfg:
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
-            "stand_still_scale": 10.0,
+            "stand_still_scale": 1.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": True,
             "window_s": 1.0,
@@ -999,7 +1016,7 @@ class RewardsCfg:
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
-            "stand_still_scale": 10.0,
+            "stand_still_scale": 1.0,
             "stand_cmd_idxs": [0, 1],
             "require_flat_terrain": True,
             "window_s": 1.0,
@@ -1103,7 +1120,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.00, #-0.3
+            "final_weight": -0.3,
             "start_it": 0,
             "end_it": 5000,
         },

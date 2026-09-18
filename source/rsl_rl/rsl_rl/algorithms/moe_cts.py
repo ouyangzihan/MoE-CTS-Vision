@@ -15,6 +15,7 @@ import itertools
 from rsl_rl.modules import ActorCriticMoECTS
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorageCTS
+from rsl_rl.utils import unpad_trajectories
 from rsl_rl.utils.redo import RedoConfig, RedoManager, sample_observations_for_redo
 from robot_lab.tasks.go2.mdp.symmetry import Go2MoECTSSymmetry
 
@@ -599,6 +600,52 @@ class MoECTS:
     def _flatten_time_env(value: torch.Tensor) -> torch.Tensor:
         return value.transpose(0, 1).flatten(0, 1)
 
+    def _student_encoder_ppo_surrogate(
+        self,
+        latent: torch.Tensor,
+        single_obs: torch.Tensor,
+        actions: torch.Tensor,
+        advantages: torch.Tensor,
+        old_actions_log_prob: torch.Tensor,
+    ) -> torch.Tensor:
+        """Clipped PPO surrogate through ``latent`` with actor / std weights frozen.
+
+        Rollout and the actor PPO step still detach the student encoder. This term is
+        added only to the student-encoder loss so walking advantage updates the CNN/MoE
+        without putting those parameters in a second Adam.
+        """
+        if latent.shape[0] == 0:
+            return latent.new_zeros(())
+        if (
+            actions.shape[0] != latent.shape[0]
+            or single_obs.shape[0] != latent.shape[0]
+            or advantages.shape[0] != latent.shape[0]
+        ):
+            raise ValueError(
+                "Student PPO surrogate batch mismatch: "
+                f"latent={tuple(latent.shape)} single_obs={tuple(single_obs.shape)} "
+                f"actions={tuple(actions.shape)} advantages={tuple(advantages.shape)}."
+            )
+        frozen = list(self.policy.actor.parameters())
+        if hasattr(self.policy, "std"):
+            frozen.append(self.policy.std)
+        if hasattr(self.policy, "log_std"):
+            frozen.append(self.policy.log_std)
+        prev_requires_grad = [p.requires_grad for p in frozen]
+        try:
+            for param in frozen:
+                param.requires_grad_(False)
+            self.policy._update_distribution(torch.cat([latent, single_obs], dim=-1))
+            log_prob = self.policy.get_actions_log_prob(actions)
+            ratio = torch.exp(log_prob - torch.squeeze(old_actions_log_prob))
+            adv = torch.squeeze(advantages)
+            surrogate = -adv * ratio
+            surrogate_clipped = -adv * torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
+            return torch.max(surrogate, surrogate_clipped).mean()
+        finally:
+            for param, required in zip(frozen, prev_requires_grad):
+                param.requires_grad_(required)
+
     @staticmethod
     def _slice_hidden_state(hidden_state, start: int, end: int | None):
         if hidden_state is None:
@@ -616,6 +663,7 @@ class MoECTS:
         mean_depth_denoise_loss = 0
         mean_height_recon_loss = 0
         mean_depth_align_loss = 0
+        mean_student_surrogate_loss = 0
         moe_gate_prob_sum = None
         moe_top1_count_sum = None
         moe_gate_entropy_sum = 0.0
@@ -800,9 +848,28 @@ class MoECTS:
         ) in make_generator():
             masks = masks_batch["masks"]
             teacher_trajectories = masks_batch["teacher_trajectories"]
+            teacher_envs = masks_batch["teacher_envs"]
+            student_envs = masks_batch["student_envs"]
+            teacher_samples = self.storage.num_transitions_per_env * teacher_envs
             student_hidden_state, teacher_hidden_state = hidden_states_batch
             student_obs = obs_batch[:, teacher_trajectories:]
             student_masks = masks[:, teacher_trajectories:]
+
+            def flatten_segments(value: torch.Tensor) -> torch.Tensor:
+                return torch.cat(
+                    [
+                        self._flatten_time_env(value[:, :teacher_envs]),
+                        self._flatten_time_env(value[:, teacher_envs:]),
+                    ],
+                    dim=0,
+                )
+
+            actions_flat = flatten_segments(actions_batch)
+            advantages_flat = flatten_segments(advantages_batch)
+            old_logp_flat = flatten_segments(old_actions_log_prob_batch)
+            if self.normalize_advantage_per_mini_batch:
+                with torch.no_grad():
+                    advantages_flat = (advantages_flat - advantages_flat.mean()) / (advantages_flat.std() + 1e-8)
 
             student_latent, gating_weights = self.policy.student_latent(
                 student_obs,
@@ -836,6 +903,17 @@ class MoECTS:
             target_usage = torch.full_like(mean_usage, 1.0 / gating_weights.shape[1])
             load_balance_loss = torch.mean((mean_usage - target_usage).pow(2))
             student_loss = latent_loss + self.load_balance_coef * load_balance_loss
+
+            single_obs = self.policy.single_obs_normalizer(student_obs["single_obs"])
+            single_obs = unpad_trajectories(single_obs, student_masks)
+            student_surrogate = self._student_encoder_ppo_surrogate(
+                latent=student_latent,
+                single_obs=self._flatten_time_env(single_obs),
+                actions=actions_flat[teacher_samples:],
+                advantages=advantages_flat[teacher_samples:],
+                old_actions_log_prob=old_logp_flat[teacher_samples:],
+            )
+            student_loss = student_loss + student_surrogate
 
             depth_denoise_loss = latent_loss.new_zeros(())
             height_recon_loss = latent_loss.new_zeros(())
@@ -879,6 +957,7 @@ class MoECTS:
 
             mean_latent_loss += latent_loss.item()
             mean_load_balance_loss += load_balance_loss.item()
+            mean_student_surrogate_loss += float(student_surrogate.detach().item())
             mean_depth_denoise_loss += float(depth_denoise_loss.detach().item())
             mean_height_recon_loss += float(height_recon_loss.detach().item())
             mean_depth_align_loss += float(depth_align_loss.detach().item())
@@ -888,6 +967,7 @@ class MoECTS:
         mean_entropy /= num_updates
         mean_latent_loss /= num_updates
         mean_load_balance_loss /= num_updates
+        mean_student_surrogate_loss /= num_updates
         mean_depth_denoise_loss /= num_updates
         mean_height_recon_loss /= num_updates
         mean_depth_align_loss /= num_updates
@@ -900,6 +980,7 @@ class MoECTS:
             "entropy": mean_entropy,
             "mean_latent_loss": mean_latent_loss,
             "mean_load_balance_loss": mean_load_balance_loss,
+            "mean_student_surrogate_loss": mean_student_surrogate_loss,
             "mean_depth_denoise_loss": mean_depth_denoise_loss,
             "mean_height_recon_loss": mean_height_recon_loss,
             "mean_depth_align_loss": mean_depth_align_loss,

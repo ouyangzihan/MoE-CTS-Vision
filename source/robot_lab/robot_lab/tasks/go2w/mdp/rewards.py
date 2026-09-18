@@ -15,7 +15,7 @@ from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.sensors import ContactSensor, RayCaster
 from isaaclab.utils.buffers import CircularBuffer
 from isaaclab.utils.math import quat_apply, quat_apply_inverse
-from robot_lab.tasks.go2.mdp.utils import is_robot_on_terrain
+from robot_lab.tasks.go2.mdp.rewards import joint_pos_stand_still_scale
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -82,13 +82,15 @@ def track_lin_vel_xy_exp_post_resample_boost(
     command_name: str,
     boost_duration_s: float = 0.75,
     boost_scale: float = 2.0,
+    weight_scale: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """``track_lin_vel_xy_exp`` with wider ``std`` right after command changes."""
+    """``track_lin_vel_xy_exp`` with wider ``std`` and reduced weight after command changes."""
     from robot_lab.tasks.go2.mdp.rewards import track_lin_vel_xy_exp
 
     std_scale = _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
-    return track_lin_vel_xy_exp(env, std * std_scale, command_name, asset_cfg=asset_cfg)
+    reward = track_lin_vel_xy_exp(env, std * std_scale, command_name, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, weight_scale)
 
 
 def track_ang_vel_z_exp_post_resample_boost(
@@ -97,13 +99,15 @@ def track_ang_vel_z_exp_post_resample_boost(
     command_name: str,
     boost_duration_s: float = 0.75,
     boost_scale: float = 2.0,
+    weight_scale: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """``track_ang_vel_z_exp`` with wider ``std`` right after command changes."""
+    """``track_ang_vel_z_exp`` with wider ``std`` and reduced weight after command changes."""
     from robot_lab.tasks.go2.mdp.rewards import track_ang_vel_z_exp
 
     std_scale = _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
-    return track_ang_vel_z_exp(env, std * std_scale, command_name, asset_cfg=asset_cfg)
+    reward = track_ang_vel_z_exp(env, std * std_scale, command_name, asset_cfg=asset_cfg)
+    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, weight_scale)
 
 
 def lin_vel_z_l2_post_resample_boost(
@@ -249,7 +253,7 @@ def feet_regulation(
     base_height_target: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     sensor_cfg: SceneEntityCfg | None = None,
-    wheel_radius: float = 0.086,
+    wheel_radius: float = 0.087,
 ) -> torch.Tensor:
     """Penalize lateral (body-y) wheel motion near the ground.
 
@@ -371,7 +375,7 @@ class wheel_slip_ratio(ManagerTermBase):
         self.sensor_cfg: SceneEntityCfg = cfg.params.get(
             "sensor_cfg", SceneEntityCfg("contact_forces", body_names=".*_foot")
         )
-        contact_offset_body = cfg.params.get("contact_offset_body", (0.0, 0.0, -0.086))
+        contact_offset_body = cfg.params.get("contact_offset_body", (0.0, 0.0, -0.087))
         self._contact_offset_b = torch.tensor(contact_offset_body, device=env.device, dtype=torch.float32)
         self._wheel_axis_b = torch.tensor([0.0, 1.0, 0.0], device=env.device, dtype=torch.float32)
         self.terrain_static_friction = float(cfg.params.get("terrain_static_friction", 1.0))
@@ -423,8 +427,8 @@ class wheel_slip_ratio(ManagerTermBase):
         threshold: float,
         sensor_cfg: SceneEntityCfg,
         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-        wheel_radius: float = 0.086,
-        contact_offset_body: tuple[float, float, float] = (0.0, 0.0, -0.086),
+        wheel_radius: float = 0.087,
+        contact_offset_body: tuple[float, float, float] = (0.0, 0.0, -0.087),
         terrain_static_friction: float = 1.0,
         terrain_dynamic_friction: float = 1.0,
     ) -> torch.Tensor:
@@ -634,12 +638,9 @@ def _per_leg_joint_pos_penalty_l1(
     )
     per_leg = torch.zeros(env.num_envs, len(_LEG_PREFIXES), device=env.device, dtype=abs_err.dtype)
     per_leg.scatter_add_(1, leg_index.unsqueeze(0).expand(env.num_envs, -1), abs_err)
-
-    cmd = torch.linalg.norm(env.command_manager.get_command(command_name)[:, stand_cmd_idxs], dim=1)
-    stand_still_mask = cmd < 0.001
-    if require_flat_terrain:
-        stand_still_mask = torch.logical_and(stand_still_mask, is_robot_on_terrain(env, "flat", asset_cfg.name))
-    scale = torch.where(stand_still_mask, stand_still_scale, 1.0)
+    scale = joint_pos_stand_still_scale(
+        env, command_name, asset_cfg, stand_still_scale, stand_cmd_idxs, require_flat_terrain
+    )
     return per_leg * scale.unsqueeze(1)
 
 

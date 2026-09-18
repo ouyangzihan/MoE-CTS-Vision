@@ -117,6 +117,31 @@ def stand_still(
     return reward
 
 
+def joint_pos_stand_still_scale(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    stand_still_scale: float,
+    stand_cmd_idxs: list[int],
+    require_flat_terrain: bool,
+    vx_cmd_idx: int = 0,
+    cmd_threshold: float = 0.001,
+) -> torch.Tensor:
+    """Per-env scale for default-pose joint penalties.
+
+    ``stand_still_scale`` applies when command dims in ``stand_cmd_idxs`` are ~0
+    (typically vy and yaw). That value is doubled when vx is also ~0.
+    """
+    command = env.command_manager.get_command(command_name)
+    stand_cmd = torch.linalg.norm(command[:, stand_cmd_idxs], dim=1)
+    stand_still_mask = stand_cmd < cmd_threshold
+    if require_flat_terrain:
+        stand_still_mask = torch.logical_and(stand_still_mask, is_robot_on_terrain(env, "flat", asset_cfg.name))
+    scale = torch.where(stand_still_mask, stand_still_scale, 1.0)
+    vx_still = command[:, vx_cmd_idx].abs() < cmd_threshold
+    return torch.where(stand_still_mask & vx_still, scale * 2.0, scale)
+
+
 def joint_pos_penalty_l1(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -128,20 +153,13 @@ def joint_pos_penalty_l1(
     """Penalize joint position error from default on the articulation."""
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
-    cmd = torch.linalg.norm(env.command_manager.get_command(command_name)[:, stand_cmd_idxs], dim=1)
     running_reward = torch.linalg.norm(
         (asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]), dim=1, ord=1
     )
-    stand_still_mask = cmd < 0.001
-
-    if require_flat_terrain:
-        stand_still_mask = torch.logical_and(stand_still_mask, is_robot_on_terrain(env, "flat", asset_cfg.name))
-    reward = torch.where(
-        stand_still_mask,
-        stand_still_scale * running_reward,
-        running_reward,
+    scale = joint_pos_stand_still_scale(
+        env, command_name, asset_cfg, stand_still_scale, stand_cmd_idxs, require_flat_terrain
     )
-    return reward
+    return scale * running_reward
 
 
 def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]]) -> torch.Tensor:
