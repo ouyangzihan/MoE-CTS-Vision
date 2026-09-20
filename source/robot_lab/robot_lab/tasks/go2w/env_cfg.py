@@ -1100,7 +1100,7 @@ class CurriculumCfg:
         params={
             "term_name": "joint_pos_penalty_l1",
             "initial_weight": -0.008,
-            "final_weight": -0.2, # -0.1
+            "final_weight": -0.3, # -0.15
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1110,7 +1110,7 @@ class CurriculumCfg:
         params={
             "term_name": "hip_pos_penalty_l1",
             "initial_weight": -0.04,
-            "final_weight": -1.0, # -0.5
+            "final_weight": -0.6, # -0.75
             "start_it": 0,
             "end_it": 5000,
         },
