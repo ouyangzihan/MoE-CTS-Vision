@@ -1,7 +1,7 @@
 """Training configs for ``RobotLab-Go2W-Symmetry-v1``.
 
 Flat plane terrain (GPU savings), Walk These Ways augmented auxiliary rewards,
-and sparse top-3 MoE gating for blind proprioceptive training.
+and a 16-expert dense (no top-k) MoE student for blind proprioceptive training.
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ _WTW_GAIT_TIMING_PARAMS = {
     "footswing_height_cmd": _WTW_FOOTSWING_HEIGHT_CMD,
     # freq = base * (vy_coef * |vy| + yaw_coef * |yaw| + 1); planted gait (freq=0) stays planted.
     "scale_gait_frequency_by_vy": True,
-    "gait_frequency_vy_coef": 1.0,
-    "gait_frequency_yaw_coef": 0.5,
+    "gait_frequency_vy_coef": 0.5,
+    "gait_frequency_yaw_coef": 0.25,
     # Footswing: 20% of base at iter 0 → 100% by iter 2500 (num_steps_per_iter=24).
     "footswing_height_curriculum_start_scale": 1,
     "footswing_height_curriculum_end_it": 2500,
@@ -348,8 +348,8 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.wheel_lateral_drag.weight = 0.0
         self.rewards.feet_regulation.weight = -0.05
-        self.rewards.action_rate_l2.weight = -0.3
-        self.rewards.action_smoothness_l2.weight = -0.3
+        self.rewards.action_rate_l2.weight = -0.2
+        self.rewards.action_smoothness_l2.weight = -0.2
         if getattr(self.curriculum, "terrain_level_progress", None) is not None:
             self.curriculum.terrain_level_progress = None
         if getattr(self.curriculum, "local_terrain_tilt_angle", None) is not None:
@@ -371,21 +371,27 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
 
 
 @configclass
-class Go2WSparseMoeCtsActorCriticCfg(RslRlMoeCtsActorCriticCfg):
-    """Student MoE with top-3 sparse gating (9 other experts get zero gate weight)."""
+class Go2WDenseMoeCtsActorCriticCfg(RslRlMoeCtsActorCriticCfg):
+    """Student MoE with 16 experts and dense softmax gating (no top-k)."""
 
-    expert_num = 12
-    gating_top_k = 3
+    expert_num = 16
+    gating_top_k = None
 
 
 @configclass
 class Go2WSymmetryFlatWtwRunnerCfg(MoECTSSymmetryRunnerCfg):
-    """MoE-CTS runner for flat-plane blind Go2W with sparse gating."""
+    """MoE-CTS runner for flat-plane blind Go2W with dense 16-expert gating."""
 
     experiment_name = "go2w_moe_cts_symmetry_flat_wtw"
-    policy = Go2WSparseMoeCtsActorCriticCfg()
+    policy = Go2WDenseMoeCtsActorCriticCfg()
 
     def __post_init__(self):
         super().__post_init__()
         self.algorithm.symmetry_cfg = Go2WMoeCtsSymmetryCfg()
         self.algorithm.symmetry_cfg.use_symmetric_augmentation = True
+        self.apply_moe_gating()
+
+    def apply_moe_gating(self) -> None:
+        """Pin 16-expert dense gating after Hydra ``from_dict``."""
+        self.policy.expert_num = 16
+        self.policy.gating_top_k = None

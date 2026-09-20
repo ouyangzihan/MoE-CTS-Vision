@@ -24,10 +24,12 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 from utils import (
+    apply_moe_gating_cfg,
     export_cts_cnn_gru_policy_as_jit,
     export_cts_policy_as_jit,
     export_cts_policy_as_onnx,
     log_moe_gating,
+    log_rl_sar_deploy_hint,
 )
 
 # add argparse arguments
@@ -176,6 +178,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 agent_cfg.algorithm.depth_align_coef = 0.0
         print(f"[INFO] use_mgdp_depth_aux={enabled} (enable_depth_aux synced for checkpoint load)")
 
+    apply_moe_gating_cfg(agent_cfg)
+
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else 64
 
     # set the environment seed
@@ -292,7 +296,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             filename="policy.pt",
         )
         print(f"[INFO] Exported CNN-GRU CTS policy to: {export_model_dir}/policy.pt")
-        print("[INFO] Copy to rl_sar/policy/go2w/moe_cts_d435i/policy.pt for deploy.")
+        log_rl_sar_deploy_hint(task_name, cnn_gru=True)
     elif is_recurrent:
         print(
             "[WARN] Skipping JIT/ONNX export: recurrent CTS policy without student_cnn_gru "
@@ -301,6 +305,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     elif agent_cfg.class_name == "OnPolicyRunnerCTS":
         export_cts_policy_as_jit(policy_nn, actor_obs_normalizer=policy_nn.actor_obs_normalizer, single_obs_normalizer=policy_nn.single_obs_normalizer, path=export_model_dir, filename="policy.pt")
         export_cts_policy_as_onnx(policy_nn, actor_obs_normalizer=policy_nn.actor_obs_normalizer, single_obs_normalizer=policy_nn.single_obs_normalizer, path=export_model_dir, filename="policy.onnx")
+        print(f"[INFO] Exported CTS policy to: {export_model_dir}/policy.pt")
+        log_rl_sar_deploy_hint(task_name, cnn_gru=False)
     else:
         export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
         export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")

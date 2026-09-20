@@ -58,7 +58,7 @@ D435I_DEPTH_MAX = 2.5
 D435I_DEPTH_IMAGE_SHAPE = (D435I_DEPTH_HEIGHT, D435I_DEPTH_WIDTH)
 D435I_GAUSSIAN_BLUR_SIGMA = 0.0
 D435I_GAUSSIAN_BLUR_KERNEL_SIZE = 3
-D435I_DEPTH_NUM_OUTPUT_FRAMES = 4
+D435I_DEPTH_NUM_OUTPUT_FRAMES = 1
 D435I_DEPTH_HISTORY_SKIP_FRAMES = 10
 D435I_CAMERA_UPDATE_HZ = 50.0
 D435I_CAMERA_UPDATE_PERIOD = 1.0 / D435I_CAMERA_UPDATE_HZ
@@ -792,8 +792,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.0, 4.0),
-            "dynamic_friction_range": (0.0, 4.0),
+            "static_friction_range": (0.0, 2.0),
+            "dynamic_friction_range": (0.0, 2.0),
             "restitution_range": (0.0, 0.5),
             "num_buckets": 64,
             "make_consistent": True,
@@ -829,7 +829,7 @@ class RewardsCfg:
             "std": 0.707106781,
             "boost_duration_s": 0.75,
             "boost_scale": 2.0,
-            "weight_scale": 0.5,
+            "weight_scale": 0.75,
         },
     )
     track_ang_vel_z_exp = RewTerm(
@@ -841,7 +841,7 @@ class RewardsCfg:
             "std": 0.707106781,
             "boost_duration_s": 0.75,
             "boost_scale": 2.0,
-            "weight_scale": 0.5,
+            "weight_scale": 0.75,
         },
     )
     # Penalize residual motion when the matching axis command is near zero.
@@ -1100,7 +1100,7 @@ class CurriculumCfg:
         params={
             "term_name": "joint_pos_penalty_l1",
             "initial_weight": -0.008,
-            "final_weight": -0.15, # -0.1
+            "final_weight": -0.2, # -0.1
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1110,7 +1110,7 @@ class CurriculumCfg:
         params={
             "term_name": "hip_pos_penalty_l1",
             "initial_weight": -0.04,
-            "final_weight": -0.75, # -0.5
+            "final_weight": -1.0, # -0.5
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1352,8 +1352,8 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
         # Active axes: 25% range max, 25% range min, 50% uniform; then |cmd|<0.05 → 0.
         cmd = self.commands.base_velocity
         cmd.axis_active_count_prob = (0.05, 0.60, 0.30, 0.05)
-        cmd.axis_max_prob = (0.25, 0.25, 0.25)
-        cmd.axis_min_prob = (0.25, 0.25, 0.25)
+        cmd.axis_max_prob = (0.35, 0.35, 0.35)
+        cmd.axis_min_prob = (0.35, 0.35, 0.35)
         cmd.axis_deadzone = 0.05
         if self.scene.front_depth_camera is not None:
             self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD

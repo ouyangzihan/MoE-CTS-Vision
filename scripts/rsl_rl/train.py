@@ -102,11 +102,12 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 """Rest everything follows."""
 
 import gymnasium as gym
+import time
 import torch
 from datetime import datetime
 
 # local imports
-from utils import Logger
+from utils import Logger, apply_moe_gating_cfg
 
 import omni
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner, OnPolicyRunnerCTS
@@ -130,6 +131,57 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
+
+def _resolve_run_log_dir(log_root_path: str, run_name: str | None, distributed: bool) -> str:
+    """Return one shared run directory across torchrun ranks.
+
+    Each process used to call ``datetime.now()`` independently. Isaac Sim startup
+    is often several seconds apart across GPUs, so ranks can pick different
+    ``YYYY-MM-DD_HH-MM-SS`` folder names. Rank 0 then creates one folder while
+    another rank later writes into a sibling path that does not exist.
+
+    Dropping seconds from the folder name does not fix that: ranks can still
+    straddle a minute, and two jobs started in the same minute would collide.
+    Rank 0 publishes the folder name; other ranks wait and reuse it.
+    """
+    run_dir_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if run_name:
+        run_dir_name += f"_{run_name}"
+
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if not distributed or world_size <= 1:
+        return os.path.join(log_root_path, run_dir_name)
+
+    rank = int(os.environ.get("RANK", "0"))
+    run_id = os.environ.get("TORCHELASTIC_RUN_ID") or os.environ.get("MASTER_PORT", "distributed")
+    safe_run_id = "".join(c if c.isalnum() or c in "-_." else "_" for c in run_id)
+    os.makedirs(log_root_path, exist_ok=True)
+    stamp_path = os.path.join(log_root_path, f".distributed_logdir_{safe_run_id}")
+
+    if rank == 0:
+        log_dir = os.path.join(log_root_path, run_dir_name)
+        os.makedirs(log_dir, exist_ok=True)
+        tmp_path = f"{stamp_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(run_dir_name)
+        os.replace(tmp_path, stamp_path)
+        return log_dir
+
+    deadline = time.time() + 600.0
+    published = ""
+    while time.time() < deadline:
+        if os.path.isfile(stamp_path):
+            with open(stamp_path, encoding="utf-8") as f:
+                published = f.read().strip()
+            if published:
+                break
+        time.sleep(0.05)
+    if not published:
+        raise RuntimeError(
+            f"Timed out waiting for rank 0 to publish the shared log directory at {stamp_path}."
+        )
+    return os.path.join(log_root_path, published)
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -184,15 +236,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
               f"height={getattr(getattr(agent_cfg, 'algorithm', None), 'height_recon_coef', None)}, "
               f"align={getattr(getattr(agent_cfg, 'algorithm', None), 'depth_align_coef', None)})")
 
-    # Re-apply after Hydra from_dict so D435i cannot inherit a dense 64-wide student.
-    if hasattr(agent_cfg, "apply_moe_gating"):
-        agent_cfg.apply_moe_gating()
-    policy_cfg = getattr(agent_cfg, "policy", None)
-    if policy_cfg is not None and hasattr(policy_cfg, "expert_num"):
-        print(
-            "[INFO] MoE student cfg: "
-            f"expert_num={policy_cfg.expert_num}, gating_top_k={getattr(policy_cfg, 'gating_top_k', None)}"
-        )
+    # Re-apply after Hydra from_dict so task MoE width/gating cannot inherit another task's student.
+    apply_moe_gating_cfg(agent_cfg)
 
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
@@ -244,12 +289,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
     # specify directory for logging runs: {time-stamp}_{run_name}
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Distributed ranks must share one folder; do not call datetime.now() independently.
+    log_dir = _resolve_run_log_dir(log_root_path, agent_cfg.run_name, args_cli.distributed)
     # The Ray Tune workflow extracts experiment name using the logging line below, hence, do not change it (see PR #2346, comment-2819298849)
-    print(f"Exact experiment name requested from command line: {log_dir}")
-    if agent_cfg.run_name:
-        log_dir += f"_{agent_cfg.run_name}"
-    log_dir = os.path.join(log_root_path, log_dir)
+    print(f"Exact experiment name requested from command line: {os.path.basename(log_dir)}")
 
     # set the IO descriptors export flag if requested
     if isinstance(env_cfg, ManagerBasedRLEnvCfg):

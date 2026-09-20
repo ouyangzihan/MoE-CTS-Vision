@@ -223,7 +223,7 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         teacher_encoder_hidden_dims: tuple[int] | list[int] = (512, 256),
         student_encoder_hidden_dims: tuple[int] | list[int] = (512, 256, 256),
         expert_num: int = 12,
-        gating_top_k: int | None = 3,
+        gating_top_k: int | None = None,
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",

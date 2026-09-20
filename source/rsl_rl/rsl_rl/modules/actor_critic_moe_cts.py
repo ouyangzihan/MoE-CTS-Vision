@@ -62,7 +62,7 @@ class ActorCriticMoECTS(nn.Module):
         state_dependent_std: bool = False,
         latent_dim: int = 32,
         norm_type: str = 'l2norm',
-        gating_top_k: int | None = 3,
+        gating_top_k: int | None = None,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:

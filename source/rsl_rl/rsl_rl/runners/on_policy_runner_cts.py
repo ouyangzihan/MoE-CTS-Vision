@@ -154,9 +154,10 @@ class OnPolicyRunnerCTS:
                 rnd_weight=self.alg.rnd.weight if self.alg_cfg["rnd_cfg"] else None,
             )
 
-            # Save model
+            # Save model (rank 0 only; other ranks never create log_dir)
             if it % self.cfg["save_interval"] == 0:
-                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"), it=it, last_model=False)  # type: ignore
+                if self.logger.log_dir is not None and not self.logger.disable_logs:
+                    self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"), it=it, last_model=False)
 
         # Save the final model after training
         if self.logger.log_dir is not None and not self.logger.disable_logs:

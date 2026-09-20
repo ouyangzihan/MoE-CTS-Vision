@@ -49,10 +49,12 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 from utils import (
+    apply_moe_gating_cfg,
     export_cts_cnn_gru_policy_as_jit,
     export_cts_policy_as_jit,
     export_cts_policy_as_onnx,
     log_moe_gating,
+    log_rl_sar_deploy_hint,
 )
 
 # add argparse arguments
@@ -87,20 +89,23 @@ parser.add_argument(
 parser.add_argument(
     "--lin_vel_x",
     type=float,
-    default=1.0,
-    help="Max |lin_vel_x| command from left stick up/down (m/s). Default: 1.0.",
+    default=None,
+    help="Max |lin_vel_x| command from left stick up/down (m/s). "
+    "Default: training |lin_vel_x| range (matches rl_sar commands_scale).",
 )
 parser.add_argument(
     "--lin_vel_y",
     type=float,
-    default=1.0,
-    help="Max |lin_vel_y| command from left stick left/right (m/s). Default: 1.0.",
+    default=None,
+    help="Max |lin_vel_y| command from left stick left/right (m/s). "
+    "Default: training |lin_vel_y| range (matches rl_sar commands_scale).",
 )
 parser.add_argument(
     "--ang_vel_z",
     type=float,
-    default=1.0,
-    help="Max |ang_vel_z| (yaw) command from right stick left/right (rad/s). Default: 1.0.",
+    default=None,
+    help="Max |ang_vel_z| (yaw) command from right stick left/right (rad/s). "
+    "Default: training |ang_vel_yaw| range (matches rl_sar commands_scale).",
 )
 parser.add_argument(
     "--terrain_type",
@@ -595,9 +600,39 @@ def _spawn_at_single_terrain_center(env, terrain_type: str, terrain_level: int) 
     )
 
 
+def _abs_command_range_max(ranges, *names: str) -> float | None:
+    for name in names:
+        value = getattr(ranges, name, None)
+        if value is None:
+            continue
+        return max(abs(float(value[0])), abs(float(value[1])))
+    return None
+
+
+def apply_play_command_scales_from_env(env_cfg, args) -> None:
+    """Fill omitted stick scales from training command ranges (rl_sar commands_scale)."""
+    cmd = getattr(getattr(env_cfg, "commands", None), "base_velocity", None)
+    ranges = getattr(cmd, "ranges", None)
+    if args.lin_vel_x is None:
+        args.lin_vel_x = _abs_command_range_max(ranges, "lin_vel_x") if ranges is not None else None
+        if args.lin_vel_x is None:
+            args.lin_vel_x = 1.0
+    if args.lin_vel_y is None:
+        args.lin_vel_y = _abs_command_range_max(ranges, "lin_vel_y") if ranges is not None else None
+        if args.lin_vel_y is None:
+            args.lin_vel_y = 1.0
+    if args.ang_vel_z is None:
+        args.ang_vel_z = (
+            _abs_command_range_max(ranges, "ang_vel_yaw", "ang_vel_z") if ranges is not None else None
+        )
+        if args.ang_vel_z is None:
+            args.ang_vel_z = 1.0
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Play with RSL-RL agent using an F710 gamepad."""
+    task_name = args_cli.task.split(":")[-1]
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     from robot_lab.tasks.go2w.env_cfg import (
@@ -608,6 +643,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     use_pose_velocity = resolve_use_pose_velocity_command(env_cfg, args_cli)
     configure_command_delivery(env_cfg, use_pose_velocity=use_pose_velocity)
+    apply_play_command_scales_from_env(env_cfg, args_cli)
     if hasattr(env_cfg, "apply_stand_still_scale_without_terrain"):
         env_cfg.apply_stand_still_scale_without_terrain()
     if use_pose_velocity:
@@ -630,6 +666,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 agent_cfg.algorithm.height_recon_coef = 0.0
                 agent_cfg.algorithm.depth_align_coef = 0.0
         print(f"[INFO] use_mgdp_depth_aux={enabled} (enable_depth_aux synced for checkpoint load)")
+
+    apply_moe_gating_cfg(agent_cfg)
 
     env_cfg.scene.num_envs = 1
     # PhysX GPU memory reservation is large by default for high-throughput training.
@@ -756,7 +794,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             filename="policy.pt",
         )
         print(f"[INFO] Exported CNN-GRU CTS policy to: {export_model_dir}/policy.pt")
-        print("[INFO] Copy to rl_sar/policy/go2w/moe_cts_d435i/policy.pt for deploy.")
+        log_rl_sar_deploy_hint(task_name, cnn_gru=True)
     elif is_recurrent:
         print(
             "[WARN] Skipping JIT/ONNX export: recurrent CTS policy without student_cnn_gru "
@@ -777,6 +815,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             path=export_model_dir,
             filename="policy.onnx",
         )
+        print(f"[INFO] Exported CTS policy to: {export_model_dir}/policy.pt")
+        log_rl_sar_deploy_hint(task_name, cnn_gru=False)
     else:
         export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
         export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")

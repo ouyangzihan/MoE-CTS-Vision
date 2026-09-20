@@ -40,8 +40,8 @@ class MoeCtsSymmetryCfg:
 class RslRlMoeCtsActorCriticCfg(RslRlPpoActorCriticCfg):
     class_name = "ActorCriticMoECTS"
     init_noise_std = 1.0
-    expert_num = 12  # student MoE experts (Go2W D435i + flat WTW share this)
-    gating_top_k: int | None = 3  # sparse gating: only top-k experts in the mixture (None = dense)
+    expert_num = 12  # Go2 default; Go2W Symmetry-v1 overrides to 16 dense, D435i-v0 to 32 dense
+    gating_top_k: int | None = 3  # sparse top-k; None (or k>=expert_num) = dense softmax
     latent_dim = 32
     norm_type = 'l2norm' # normalization type for encoders: l2norm, simnorm
     teacher_encoder_hidden_dims = [512, 256]
@@ -56,10 +56,10 @@ class RslRlMoeCtsActorCriticCfg(RslRlPpoActorCriticCfg):
 class RslRlMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsActorCriticCfg):
     class_name = "ActorCriticMoECTSCNNGRU"
     expert_num = 12
-    gating_top_k = 3
+    gating_top_k: int | None = 3
     actor_image_obs_groups = ["depth"]
     image_shape = (60, 60)
-    depth_num_frames = 4
+    depth_num_frames = 1
     cnn_channels = (16, 32, 64)
     cnn_kernel_size = 3
     cnn_stride = 2

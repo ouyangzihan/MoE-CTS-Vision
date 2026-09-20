@@ -5,6 +5,7 @@ from robot_lab.tasks.go2.rsl_rl_cfg import (
     MoECTSRunnerCfg,
     MoECTSSymmetryRunnerCfg,
     MoeCtsSymmetryCfg,
+    RslRlMoeCtsCnnGruActorCriticCfg,
 )
 
 
@@ -24,8 +25,17 @@ class Go2WMoECTSRunnerCfg(MoECTSRunnerCfg):
 
 
 @configclass
+class Go2WMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsCnnGruActorCriticCfg):
+    """Student MoE with 32 experts and dense softmax gating (no top-k)."""
+
+    expert_num = 32
+    gating_top_k = None
+
+
+@configclass
 class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
     experiment_name = "go2w_moe_cts_d435i"
+    policy = Go2WMoeCtsCnnGruActorCriticCfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -47,9 +57,9 @@ class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
         self.algorithm.redo_cfg.reset_end_step = self.max_iterations * grad_steps_per_iter
 
     def apply_moe_gating(self) -> None:
-        """Pin 12-expert top-3 after Hydra ``from_dict`` (same pattern as MGDP obs flags)."""
-        self.policy.expert_num = 12
-        self.policy.gating_top_k = 3
+        """Pin 32-expert dense gating after Hydra ``from_dict`` (same pattern as MGDP obs flags)."""
+        self.policy.expert_num = 32
+        self.policy.gating_top_k = None
 
 
 @configclass

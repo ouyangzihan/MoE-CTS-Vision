@@ -9,15 +9,40 @@ import sys
 
 
 def log_moe_gating(policy: object) -> None:
-    """Print student MoE width and sparse top-k used for play/export."""
+    """Print student MoE width and gating used for play/export."""
     encoder = getattr(policy, "student_moe_encoder", None)
     moe = getattr(encoder, "moe", None) if encoder is not None else None
     if moe is None:
         return
     expert_num = int(moe.expert_num)
-    gating_top_k = int(moe.gating_top_k)
-    mode = "sparse" if gating_top_k < expert_num else "dense"
+    gating_top_k = moe.gating_top_k
+    gating_top_k = expert_num if gating_top_k is None else int(gating_top_k)
+    mode = "dense" if gating_top_k >= expert_num else "sparse"
     print(f"[INFO] MoE student gating: expert_num={expert_num}, gating_top_k={gating_top_k} ({mode})")
+
+
+def apply_moe_gating_cfg(agent_cfg: object) -> None:
+    """Re-pin student MoE width/gating after Hydra ``from_dict`` (train and play)."""
+    if hasattr(agent_cfg, "apply_moe_gating"):
+        agent_cfg.apply_moe_gating()
+    policy_cfg = getattr(agent_cfg, "policy", None)
+    if policy_cfg is not None and hasattr(policy_cfg, "expert_num"):
+        print(
+            "[INFO] MoE student cfg: "
+            f"expert_num={policy_cfg.expert_num}, gating_top_k={getattr(policy_cfg, 'gating_top_k', None)}"
+        )
+
+
+def log_rl_sar_deploy_hint(task_name: str, *, cnn_gru: bool) -> None:
+    """Print where to copy the exported JIT for the matching rl_sar policy folder."""
+    task = task_name.split(":")[-1]
+    if cnn_gru or "D435i" in task:
+        dest = "rl_sar/policy/go2w/moe_cts_d435i/policy.pt"
+    elif "Symmetry" in task:
+        dest = "rl_sar/policy/go2w/moe_cts_flat/policy.pt"
+    else:
+        return
+    print(f"[INFO] Copy to {dest} for deploy.")
 
 
 def resolve_cts_single_obs_feature_dims(num_single_obs: int, num_actions: int) -> list[int]:
