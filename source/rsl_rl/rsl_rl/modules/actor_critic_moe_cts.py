@@ -24,6 +24,7 @@ class StudentMoEEncoder(nn.Module):
         activation='elu',
         norm_type='l2norm',
         gating_top_k: int | None = None,
+        gating_noise_std: float = 0.0,
     ):
         super().__init__()
         self.norm_layer = L2Norm() if norm_type == 'l2norm' else SimNorm()
@@ -34,6 +35,7 @@ class StudentMoEEncoder(nn.Module):
             output_dim=output_dim,
             activation=activation,
             gating_top_k=gating_top_k,
+            gating_noise_std=gating_noise_std,
         )
     
     def forward(self, obs):
@@ -63,6 +65,7 @@ class ActorCriticMoECTS(nn.Module):
         latent_dim: int = 32,
         norm_type: str = 'l2norm',
         gating_top_k: int | None = None,
+        gating_noise_std: float = 0.0,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -111,11 +114,13 @@ class ActorCriticMoECTS(nn.Module):
             activation=activation,
             norm_type=norm_type,
             gating_top_k=gating_top_k,
+            gating_noise_std=gating_noise_std,
         )
         print(f"Student MoE Encoder: {self.student_moe_encoder}")
         print(
             f"[INFO] Student MoE gating: expert_num={self.student_moe_encoder.moe.expert_num}, "
-            f"gating_top_k={self.student_moe_encoder.moe.gating_top_k}"
+            f"gating_top_k={self.student_moe_encoder.moe.gating_top_k}, "
+            f"gating_noise_std={self.student_moe_encoder.moe.gating_noise_std}"
         )
         
         # Actor

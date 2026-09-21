@@ -30,6 +30,7 @@ class Go2WMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsCnnGruActorCriticCfg):
 
     expert_num = 32
     gating_top_k = None
+    gating_noise_std = 1.0
     # Match Go2WD435iSceneCfg.forward_height_scanner (21×25, 0–2 m ahead).
     height_map_shape = (21, 25)
 
@@ -62,7 +63,10 @@ class Go2WMoECTSD435iRunnerCfg(MoECTSD435iRunnerCfg):
         """Pin 32-expert dense gating after Hydra ``from_dict`` (same pattern as MGDP obs flags)."""
         self.policy.expert_num = 32
         self.policy.gating_top_k = None
+        self.policy.gating_noise_std = 1.0
         self.policy.height_map_shape = (21, 25)
+        self.algorithm.router_z_loss_coef = 0.001
+        self.algorithm.detach_gate_in_student_surrogate = True
 
 
 @configclass

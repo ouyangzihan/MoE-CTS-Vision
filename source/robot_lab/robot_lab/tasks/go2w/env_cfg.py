@@ -231,12 +231,12 @@ class Go2WD435iSceneCfg(Go2WSceneCfg):
         gaussian_blur_kernel_size=D435I_GAUSSIAN_BLUR_KERNEL_SIZE,
         enable_sensor_noise=True,
         use_env_cfg_noise_overrides=False,
-        sensor_noise_std= 0.01, # 0.02,
-        sensor_dropout_prob= 0.1, # 0.2,
-        sensor_depth_dependent_noise_scale= 0.25, # 0.5,
-        sensor_edge_speckle_prob= 0.02, # 0.04,
-        sensor_temporal_flicker_std= 0.075, # 0.015,
-        sensor_hole_blob_prob= 0.0375, # 0.075,
+        sensor_noise_std= 0.002, # 0.02,
+        sensor_dropout_prob= 0.02, # 0.2,
+        sensor_depth_dependent_noise_scale= 0.05, # 0.5,
+        sensor_edge_speckle_prob= 0.004, # 0.04,
+        sensor_temporal_flicker_std= 0.0015, # 0.015,
+        sensor_hole_blob_prob= 0.0075, # 0.075,
         sensor_hole_blob_size_range=(3, 12),
         sensor_randomize_dropout_fill_value=True,
         sensor_dropout_fill_value=None,
@@ -828,8 +828,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.0, 2.0),
-            "dynamic_friction_range": (0.0, 2.0),
+            "static_friction_range": (0.2, 1.5),
+            "dynamic_friction_range": (0.2, 1.5),
             "restitution_range": (0.0, 0.5),
             "num_buckets": 64,
             "make_consistent": True,
@@ -1324,7 +1324,7 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
     observations: D435iObservationsCfg = D435iObservationsCfg()
     # Master switch for MGDP-style depth aux training (denoise / height recon /
     # geometry alignment / harsher noise curriculum). False = current pipeline.
-    use_mgdp_depth_aux: bool = True
+    use_mgdp_depth_aux: bool = False
     # Runtime noise overrides written by depth_noise_curriculum when aux is on.
     depth_noise_std: float = 0.02
     depth_dropout_prob: float = 0.2

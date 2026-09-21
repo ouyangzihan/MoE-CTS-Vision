@@ -136,6 +136,33 @@ class Experts(nn.Module):
         expert_outs = expert_outs.reshape(-1, self.expert_num, self.output_dim)
         return expert_outs
 
+def switch_load_balance_loss(gating_weights: torch.Tensor) -> torch.Tensor:
+    """Switch Transformer aux loss: ``N * sum_i f_i P_i``.
+
+    ``P_i`` is mean gate probability, ``f_i`` is the fraction of tokens whose
+    argmax is expert ``i``. The value is 1 when routing is uniform and ``N``
+    when a single expert takes every token. Prefer this over MSE-to-uniform:
+    MSE has a vanishing gradient near balance, so it cannot stop collapse.
+    """
+    num_experts = gating_weights.shape[-1]
+    mean_prob = gating_weights.mean(dim=0)
+    top1 = gating_weights.argmax(dim=-1)
+    freq = torch.zeros(num_experts, device=gating_weights.device, dtype=gating_weights.dtype)
+    freq.scatter_add_(0, top1, torch.ones(top1.shape[0], device=gating_weights.device, dtype=gating_weights.dtype))
+    freq = freq / gating_weights.shape[0]
+    return num_experts * torch.sum(freq * mean_prob)
+
+
+def router_z_loss(logits: torch.Tensor) -> torch.Tensor:
+    """ST-MoE router z-loss: ``mean(logsumexp(logits)^2)``.
+
+    Keeps gate logits from growing so large that softmax saturates. Once the
+    gate is one-hot, load-balance gradients through softmax vanish and collapse
+    cannot be undone.
+    """
+    return torch.mean(torch.logsumexp(logits, dim=-1).pow(2))
+
+
 class MoE(nn.Module):
     def __init__(self,
                  expert_num,
@@ -144,9 +171,11 @@ class MoE(nn.Module):
                  output_dim,
                  activation='elu',
                  gating_top_k: int | None = None,
+                 gating_noise_std: float = 0.0,
     ):
         super().__init__()
         self.expert_num = expert_num
+        self.gating_noise_std = float(gating_noise_std)
         # TorchScript cannot compare Optional[int]; treat None / k>=N as dense softmax.
         if gating_top_k is None or gating_top_k >= expert_num:
             self.gating_top_k = expert_num
@@ -167,6 +196,18 @@ class MoE(nn.Module):
         
         # Gating network (softmax applied in forward for optional top-k sparsity)
         self.gating_mlp = MLP(input_dim, expert_num, hidden_dims, activation)
+        self._zero_init_router()
+        self.last_router_logits = None
+        self.last_weights = None
+        self.last_expert_outs = None
+
+    def _zero_init_router(self) -> None:
+        """Start at uniform softmax so the first expert cannot win at init."""
+        last = self.gating_mlp.network[-1]
+        if isinstance(last, nn.Linear):
+            nn.init.zeros_(last.weight)
+            if last.bias is not None:
+                nn.init.zeros_(last.bias)
 
     def _remap_legacy_gating_keys(self, state_dict: dict) -> dict:
         """Map pre-sparse-gating checkpoints (``gating_network.0.*``) to ``gating_mlp.*``."""
@@ -187,6 +228,10 @@ class MoE(nn.Module):
 
     def forward(self, x):
         logits = self.gating_mlp(x)
+        if not torch.jit.is_scripting():
+            self.last_router_logits = logits
+        if self.training and self.gating_noise_std > 0.0 and not torch.jit.is_scripting():
+            logits = logits + self.gating_noise_std * torch.randn_like(logits)
         if self.gating_top_k < self.expert_num:
             top_k_logits, top_k_indices = torch.topk(logits, self.gating_top_k, dim=-1)
             top_k_weights = F.softmax(top_k_logits, dim=-1)
@@ -196,5 +241,8 @@ class MoE(nn.Module):
             weights = F.softmax(logits, dim=-1)
         expert_outs = self.experts(x)  # (B, expert_num, output_dim)
         output = torch.sum(weights.unsqueeze(-1) * expert_outs, dim=1)  # (B, output_dim)
+        if not torch.jit.is_scripting():
+            self.last_weights = weights
+            self.last_expert_outs = expert_outs
         return output, weights
 

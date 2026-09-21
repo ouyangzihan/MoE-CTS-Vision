@@ -224,6 +224,7 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         student_encoder_hidden_dims: tuple[int] | list[int] = (512, 256, 256),
         expert_num: int = 12,
         gating_top_k: int | None = None,
+        gating_noise_std: float = 0.0,
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
@@ -316,6 +317,7 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
             activation=activation,
             norm_type=norm_type,
             gating_top_k=gating_top_k,
+            gating_noise_std=gating_noise_std,
         )
         print(f"Student CNN-GRU: {self.student_cnn_gru}")
         print(f"Teacher Encoder: {self.teacher_encoder}")
@@ -323,7 +325,8 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         print(
             "[INFO] Student MoE gating: "
             f"expert_num={self.student_moe_encoder.moe.expert_num}, "
-            f"gating_top_k={self.student_moe_encoder.moe.gating_top_k}"
+            f"gating_top_k={self.student_moe_encoder.moe.gating_top_k}, "
+            f"gating_noise_std={self.student_moe_encoder.moe.gating_noise_std}"
         )
 
         self.state_dependent_std = state_dependent_std

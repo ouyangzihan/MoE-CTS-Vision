@@ -14,6 +14,7 @@ import itertools
 
 from rsl_rl.modules import ActorCriticMoECTS
 from rsl_rl.modules.rnd import RandomNetworkDistillation
+from rsl_rl.networks.moe import router_z_loss, switch_load_balance_loss
 from rsl_rl.storage import RolloutStorageCTS
 from rsl_rl.utils import unpad_trajectories
 from rsl_rl.utils.redo import RedoConfig, RedoManager, sample_observations_for_redo
@@ -41,6 +42,8 @@ class MoECTS:
         value_loss_coef: float = 1.0,
         entropy_coef: float = 0.01,
         load_balance_coef: float = 0.01,
+        router_z_loss_coef: float = 0.001,
+        detach_gate_in_student_surrogate: bool = True,
         learning_rate: float = 0.001,
         student_encoder_learning_rate: float = 0.001,
         max_grad_norm: float = 1.0,
@@ -127,6 +130,8 @@ class MoECTS:
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
         self.load_balance_coef = load_balance_coef
+        self.router_z_loss_coef = router_z_loss_coef
+        self.detach_gate_in_student_surrogate = detach_gate_in_student_surrogate
         self.gamma = gamma
         self.lam = lam
         self.max_grad_norm = max_grad_norm
@@ -316,6 +321,7 @@ class MoECTS:
         mean_entropy = 0
         mean_latent_loss = 0
         mean_load_balance_loss = 0
+        mean_router_z_loss = 0
         moe_gate_prob_sum = None
         moe_top1_count_sum = None
         moe_gate_entropy_sum = 0.0
@@ -516,12 +522,15 @@ class MoECTS:
                 moe_gate_entropy_sum += (-(gating_weights * torch.log(gating_weights + 1e-8)).sum(dim=-1)).sum().item()
                 moe_sample_count += gating_weights.shape[0]
 
-            # Load balance loss
-            mean_usage = torch.mean(gating_weights, dim=0)
-            target_usage = torch.full_like(mean_usage, 1.0 / gating_weights.shape[1])
-            load_balance_loss = torch.mean((mean_usage - target_usage).pow(2))
-            # load_balance_loss = torch.sum(mean_usage.pow(2)) * gating_weights.shape[1]  # Switch Transformer style
-            student_loss = latent_loss + self.load_balance_coef * load_balance_loss
+            # Load balance + router z-loss (Switch / ST-MoE). MSE-to-uniform is too
+            # weak for dense 32-way softmax: collapsed MSE is ~0.03, so coef 0.01
+            # cannot fight latent matching or PPO-through-gate.
+            load_balance_loss, z_loss = self._moe_aux_losses(gating_weights)
+            student_loss = (
+                latent_loss
+                + self.load_balance_coef * load_balance_loss
+                + self.router_z_loss_coef * z_loss
+            )
             
             self.optimizer_stu_enc.zero_grad()
             student_loss.backward()
@@ -539,6 +548,7 @@ class MoECTS:
 
             mean_latent_loss += latent_loss.item()
             mean_load_balance_loss += load_balance_loss.item()
+            mean_router_z_loss += z_loss.item()
 
         # Divide the losses by the number of updates
         mean_value_loss /= num_updates
@@ -546,6 +556,7 @@ class MoECTS:
         mean_entropy /= num_updates
         mean_latent_loss /= num_updates
         mean_load_balance_loss /= num_updates
+        mean_router_z_loss /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
 
@@ -555,7 +566,8 @@ class MoECTS:
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
             "mean_latent_loss": mean_latent_loss,
-            "mean_load_balance_loss": mean_load_balance_loss
+            "mean_load_balance_loss": mean_load_balance_loss,
+            "moe/router_z_loss": mean_router_z_loss,
         }
         if moe_sample_count > 0 and moe_gate_prob_sum is not None and moe_top1_count_sum is not None:
             mean_gate_probs = moe_gate_prob_sum / moe_sample_count
@@ -612,7 +624,8 @@ class MoECTS:
 
         Rollout and the actor PPO step still detach the student encoder. This term is
         added only to the student-encoder loss so walking advantage updates the CNN/MoE
-        without putting those parameters in a second Adam.
+        bodies without putting those parameters in a second Adam. Gate weights are
+        detached in ``_student_ppo_latent`` so PPO cannot collapse the router.
         """
         if latent.shape[0] == 0:
             return latent.new_zeros(())
@@ -654,12 +667,48 @@ class MoECTS:
             return tuple(MoECTS._slice_hidden_state(state, start, end) for state in hidden_state)
         return hidden_state[:, start:end]
 
+    def _moe_aux_losses(self, gating_weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Switch load-balance loss and ST-MoE router z-loss for the current mini-batch."""
+        load_balance_loss = switch_load_balance_loss(gating_weights)
+        logits = getattr(self.policy.student_moe_encoder.moe, "last_router_logits", None)
+        if logits is None:
+            z_loss = gating_weights.new_zeros(())
+        else:
+            z_loss = router_z_loss(logits)
+        return load_balance_loss, z_loss
+
+    def _student_ppo_latent(self, student_latent: torch.Tensor) -> torch.Tensor:
+        """Mix last expert outputs with detached gate weights, then match PPO batch layout.
+
+        Distillation and load-balance still train the router. Walking advantage should
+        not: otherwise the gate collapses onto whichever expert is currently best.
+        """
+        if student_latent.ndim > 2:
+            flat_fallback = self._flatten_time_env(student_latent)
+        else:
+            flat_fallback = student_latent
+        if not self.detach_gate_in_student_surrogate:
+            return flat_fallback
+        encoder = self.policy.student_moe_encoder
+        moe = encoder.moe
+        expert_outs = getattr(moe, "last_expert_outs", None)
+        weights = getattr(moe, "last_weights", None)
+        if expert_outs is None or weights is None:
+            return flat_fallback
+        mixed = torch.sum(weights.detach().unsqueeze(-1) * expert_outs, dim=1)
+        mixed = encoder.norm_layer(mixed)
+        if student_latent.ndim > 2:
+            mixed = mixed.reshape(*student_latent.shape[:-1], student_latent.shape[-1])
+            return self._flatten_time_env(mixed)
+        return mixed
+
     def _update_recurrent(self, learning_iteration: int | None = None) -> dict[str, float]:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
         mean_latent_loss = 0
         mean_load_balance_loss = 0
+        mean_router_z_loss = 0
         mean_depth_denoise_loss = 0
         mean_height_recon_loss = 0
         mean_depth_align_loss = 0
@@ -876,6 +925,7 @@ class MoECTS:
                 masks=student_masks,
                 hidden_state=self._slice_hidden_state(student_hidden_state, teacher_trajectories, None),
             )
+            ppo_latent = self._student_ppo_latent(student_latent)
             with torch.no_grad():
                 teacher_latent = self.policy.teacher_latent(
                     student_obs,
@@ -899,15 +949,17 @@ class MoECTS:
                 moe_gate_entropy_sum += (-(gating_weights * torch.log(gating_weights + 1e-8)).sum(dim=-1)).sum().item()
                 moe_sample_count += gating_weights.shape[0]
 
-            mean_usage = torch.mean(gating_weights, dim=0)
-            target_usage = torch.full_like(mean_usage, 1.0 / gating_weights.shape[1])
-            load_balance_loss = torch.mean((mean_usage - target_usage).pow(2))
-            student_loss = latent_loss + self.load_balance_coef * load_balance_loss
+            load_balance_loss, z_loss = self._moe_aux_losses(gating_weights)
+            student_loss = (
+                latent_loss
+                + self.load_balance_coef * load_balance_loss
+                + self.router_z_loss_coef * z_loss
+            )
 
             single_obs = self.policy.single_obs_normalizer(student_obs["single_obs"])
             single_obs = unpad_trajectories(single_obs, student_masks)
             student_surrogate = self._student_encoder_ppo_surrogate(
-                latent=student_latent,
+                latent=ppo_latent,
                 single_obs=self._flatten_time_env(single_obs),
                 actions=actions_flat[teacher_samples:],
                 advantages=advantages_flat[teacher_samples:],
@@ -957,6 +1009,7 @@ class MoECTS:
 
             mean_latent_loss += latent_loss.item()
             mean_load_balance_loss += load_balance_loss.item()
+            mean_router_z_loss += z_loss.item()
             mean_student_surrogate_loss += float(student_surrogate.detach().item())
             mean_depth_denoise_loss += float(depth_denoise_loss.detach().item())
             mean_height_recon_loss += float(height_recon_loss.detach().item())
@@ -967,6 +1020,7 @@ class MoECTS:
         mean_entropy /= num_updates
         mean_latent_loss /= num_updates
         mean_load_balance_loss /= num_updates
+        mean_router_z_loss /= num_updates
         mean_student_surrogate_loss /= num_updates
         mean_depth_denoise_loss /= num_updates
         mean_height_recon_loss /= num_updates
@@ -980,6 +1034,7 @@ class MoECTS:
             "entropy": mean_entropy,
             "mean_latent_loss": mean_latent_loss,
             "mean_load_balance_loss": mean_load_balance_loss,
+            "moe/router_z_loss": mean_router_z_loss,
             "mean_student_surrogate_loss": mean_student_surrogate_loss,
             "mean_depth_denoise_loss": mean_depth_denoise_loss,
             "mean_height_recon_loss": mean_height_recon_loss,

@@ -42,6 +42,7 @@ class RslRlMoeCtsActorCriticCfg(RslRlPpoActorCriticCfg):
     init_noise_std = 1.0
     expert_num = 12  # Go2 default; Go2W Symmetry-v1 overrides to 16 dense, D435i-v0 to 32 dense
     gating_top_k: int | None = 3  # sparse top-k; None (or k>=expert_num) = dense softmax
+    gating_noise_std = 0.0  # training-only Gaussian noise on gate logits; D435i-v0 sets 1.0
     latent_dim = 32
     norm_type = 'l2norm' # normalization type for encoders: l2norm, simnorm
     teacher_encoder_hidden_dims = [512, 256]
@@ -108,7 +109,9 @@ class RslRlRedoCfg:
 class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     class_name = "MoECTS"
     value_loss_coef = 1.0
-    load_balance_coef = 0.01  # coefficient for load balance loss
+    load_balance_coef = 0.01  # Switch Transformer N*sum(f_i P_i); 1=uniform, N=collapsed
+    router_z_loss_coef = 0.001  # ST-MoE z-loss; stops softmax saturation / irreversible collapse
+    detach_gate_in_student_surrogate = True  # PPO must not train the router (winner-take-all)
     use_clipped_value_loss = True
     clip_param = 0.2
     entropy_coef = 0.01

@@ -337,23 +337,23 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "rough_slope_up": with_slope_threshold(
             RoughInvertedSlopeTerrainCfg(
-                proportion=0.05,
-                slope_range=(0.5, 1), # (0.1, 0.568),
+                proportion=0.1,
+                slope_range=(0.2, 1), # (0.1, 0.568),
             ),
             10.0,  # effectively disable slope correction for rough_slope_up terrain
         ),
         "rough_slope": with_slope_threshold(
             RoughSlopeTerrainCfg(
                 proportion=0.05,
-                slope_range=(0.5, 1), # (0.1, 0.568),
+                slope_range=(0.2, 1), # (0.1, 0.568),
             ),
             10.0,  # effectively disable slope correction for rough_slope terrain
         ),
         "stairs_up": with_slope_threshold(
             RandomWidthInvertedPyramidStairsTerrainCfg(
-                proportion=0.2,
+                proportion=0.25,
                 # Baked mesh range. go2w curriculum raises effective lower bound via min terrain level.
-                step_height_range=(0.1, 0.25),
+                step_height_range=(0.05, 0.25),
                 step_width_range=(0.29, 0.37), # (0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -361,8 +361,8 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "stairs_down": with_slope_threshold(
             RandomWidthPyramidStairsTerrainCfg(
-                proportion=0.1,
-                step_height_range=(0.1, 0.25),
+                proportion=0.05,
+                step_height_range=(0.05, 0.25),
                 step_width_range=(0.29, 0.37), # (0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -371,7 +371,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         "rough_stairs_up": with_slope_threshold(
             RoughRandomWidthInvertedPyramidStairsTerrainCfg(
                 proportion=0.0,
-                step_height_range=(0.1, 0.25),
+                step_height_range=(0.05, 0.25),
                 step_width_range=(0.29, 0.37), # (0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -380,7 +380,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         "rough_stairs_down": with_slope_threshold(
             RoughRandomWidthPyramidStairsTerrainCfg(
                 proportion=0.0,
-                step_height_range=(0.1, 0.25),
+                step_height_range=(0.05, 0.25),
                 step_width_range=(0.29, 0.37), # (0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -412,6 +412,6 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
             gap_width_range=(0.1, 0.5), # (0.0, 0.9),
             platform_width=3.0,
         ),
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.05),
     },
 )
