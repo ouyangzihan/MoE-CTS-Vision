@@ -228,7 +228,7 @@ class Go2SymmetryMapper:
             return self.reverse_joints(value)
         if name == "contact_force":
             return self.reverse_feet(value)
-        if name == "height_scan":
+        if name.endswith("height_scan"):
             return self.reverse_height_scan(cfg, value)
         if name == "depth_image":
             return self.reverse_depth_image(cfg, value)

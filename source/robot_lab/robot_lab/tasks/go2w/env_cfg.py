@@ -101,6 +101,16 @@ D435I_RS_DISPARITY_FX = D435I_RS_STREAM_WIDTH / (
     2.0 * math.tan(math.radians(D435I_HORIZONTAL_FOV_DEG) / 2.0)
 )
 
+# WMP-style privileged forward height map for depth aux (not used by rewards).
+# 0.0–2.0 m ahead, ±1.2 m lateral, 0.1 m grid → 21 × 25 = 525.
+FORWARD_HEIGHT_RESOLUTION = 0.1
+FORWARD_HEIGHT_SIZE = (2.0, 2.4)
+FORWARD_HEIGHT_OFFSET_X = 1.0
+FORWARD_HEIGHT_MAP_SHAPE = (
+    int(round(FORWARD_HEIGHT_SIZE[0] / FORWARD_HEIGHT_RESOLUTION)) + 1,
+    int(round(FORWARD_HEIGHT_SIZE[1] / FORWARD_HEIGHT_RESOLUTION)) + 1,
+)
+
 LEG_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES, preserve_order=True)
 WHEEL_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES, preserve_order=True)
 ALL_JOINT_SCENE_CFG = SceneEntityCfg("robot", joint_names=ALL_JOINT_NAMES, preserve_order=True)
@@ -270,6 +280,19 @@ class Go2WD435iSceneCfg(Go2WSceneCfg):
         debug_vis=False,
     )
 
+    # Privileged 0–2 m forward elevation (WMP 525-d map). Reward scanners are unchanged.
+    forward_height_scanner = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/base",
+        offset=RayCasterCfg.OffsetCfg(pos=(FORWARD_HEIGHT_OFFSET_X, 0.0, 20.0)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(
+            resolution=FORWARD_HEIGHT_RESOLUTION,
+            size=FORWARD_HEIGHT_SIZE,
+        ),
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+
 
 ##
 # MDP settings
@@ -309,6 +332,7 @@ def make_pose_velocity_command_cfg() -> mdp.PoseVelocityCommandCfg:
             "wave": {"lin_vel_x": (0.0, 1.5), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "slope_up": {"lin_vel_x": (0.0, 1.5), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "slope_down": {"lin_vel_x": (0.0, 1.5), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
+            "rough_slope_up": {"lin_vel_x": (0.0, 1.5), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "rough_slope": {"lin_vel_x": (0.0, 1.5), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "stairs_up": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
             "stairs_down": {"lin_vel_x": (0.0, 1.0), "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.5, 1.5)},
@@ -642,6 +666,17 @@ class ObservationsCfg:
 @configclass
 class D435iObservationsCfg(ObservationsCfg):
     @configclass
+    class CriticCfg(ObservationsCfg.CriticCfg):
+        """Critic keeps the local scan and also sees the 0–2 m forward map."""
+
+        forward_height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("forward_height_scanner")},
+            clip=(-1.0, 1.0),
+            scale=2.5,
+        )
+
+    @configclass
     class DepthCfg(ObsGroup):
         """Depth observation for the student/policy encoder."""
 
@@ -690,11 +725,11 @@ class D435iObservationsCfg(ObservationsCfg):
 
     @configclass
     class HeightMapCfg(ObsGroup):
-        """Privileged local elevation map (17x11) for height reconstruction / alignment."""
+        """Privileged forward elevation map (21x25, 0–2 m) for height reconstruction / alignment."""
 
         height_scan = ObsTerm(
             func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            params={"sensor_cfg": SceneEntityCfg("forward_height_scanner")},
             clip=(-1.0, 1.0),
             scale=2.5,
         )
@@ -703,6 +738,7 @@ class D435iObservationsCfg(ObservationsCfg):
             self.enable_corruption = False
             self.concatenate_terms = True
 
+    critic: CriticCfg = CriticCfg()
     depth: DepthCfg = DepthCfg()
     # Populated only when Go2WD435iEnvCfg.use_mgdp_depth_aux is True.
     clean_depth: CleanDepthCfg | None = None
@@ -905,12 +941,12 @@ class RewardsCfg:
     )
     action_rate_l2 = RewTerm(
         func=mdp.action_rate_l2,
-        weight=-0.01,
+        weight=-0.05,
         params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
     )
     action_smoothness_l2 = RewTerm(
         func=mdp.action_smoothness_l2,
-        weight=-0.01,
+        weight=-0.05,
         params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
     )
     undesired_contacts = RewTerm(
@@ -1000,7 +1036,7 @@ class RewardsCfg:
     # Variance of 1s temporal-mean per-leg hip / thigh+calf L1 penalties.
     hip_pos_penalty_l1_leg_var = RewTerm(
         func=mdp.joint_pos_penalty_l1_leg_var,
-        weight=-0.2,
+        weight=-0.,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
@@ -1012,7 +1048,7 @@ class RewardsCfg:
     )
     joint_pos_penalty_l1_leg_var = RewTerm(
         func=mdp.joint_pos_penalty_l1_leg_var,
-        weight=-0.2,
+        weight=-0.,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
@@ -1100,7 +1136,7 @@ class CurriculumCfg:
         params={
             "term_name": "joint_pos_penalty_l1",
             "initial_weight": -0.008,
-            "final_weight": -0.3, # -0.15
+            "final_weight": -0.1, # -0.15
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1110,7 +1146,7 @@ class CurriculumCfg:
         params={
             "term_name": "hip_pos_penalty_l1",
             "initial_weight": -0.04,
-            "final_weight": -0.6, # -0.75
+            "final_weight": -0.5, # -0.75
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1120,7 +1156,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheels_not_in_contact",
             "initial_weight": -0.,
-            "final_weight": -0.3,
+            "final_weight": -0.,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1240,6 +1276,8 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
             self.scene.height_scanner_small.update_period = self.decimation * self.sim.dt
         if self.scene.local_terrain_scanner is not None:
             self.scene.local_terrain_scanner.update_period = self.decimation * self.sim.dt
+        if getattr(self.scene, "forward_height_scanner", None) is not None:
+            self.scene.forward_height_scanner.update_period = self.decimation * self.sim.dt
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
         if self.scene.wheel_contact_points is not None:
@@ -1286,7 +1324,7 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
     observations: D435iObservationsCfg = D435iObservationsCfg()
     # Master switch for MGDP-style depth aux training (denoise / height recon /
     # geometry alignment / harsher noise curriculum). False = current pipeline.
-    use_mgdp_depth_aux: bool = False
+    use_mgdp_depth_aux: bool = True
     # Runtime noise overrides written by depth_noise_curriculum when aux is on.
     depth_noise_std: float = 0.02
     depth_dropout_prob: float = 0.2

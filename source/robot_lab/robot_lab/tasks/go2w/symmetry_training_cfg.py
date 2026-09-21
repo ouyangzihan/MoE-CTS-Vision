@@ -29,14 +29,14 @@ from robot_lab.tasks.go2w.rsl_rl_cfg import Go2WMoeCtsSymmetryCfg
 WTW_JUMP_WEIGHT = 100.0
 WTW_ORIENTATION_CONTROL_WEIGHT = -20.0 # -5.0
 WTW_RAIBERT_HEURISTIC_WEIGHT = -10.0
-WTW_RAIBERT_HEURISTIC_IMBALANCE_X_WEIGHT = -15
+WTW_RAIBERT_HEURISTIC_IMBALANCE_X_WEIGHT = 0 # -15
 WTW_RAIBERT_HEURISTIC_IMBALANCE_Y_WEIGHT = -0
 WTW_FEET_CLEARANCE_CMD_LINEAR_WEIGHT = -30.0
-WTW_FEET_CLEARANCE_CMD_LINEAR_IMBALANCE_WEIGHT = -10 # -40
+WTW_FEET_CLEARANCE_CMD_LINEAR_IMBALANCE_WEIGHT = 0 # -10 # -40
 WTW_TRACKING_CONTACTS_SHAPED_FORCE_WEIGHT = 4.0
 WTW_TRACKING_CONTACTS_SHAPED_VEL_WEIGHT = 4.0
 
-_WTW_FOOTSWING_HEIGHT_CMD = 0.04
+_WTW_FOOTSWING_HEIGHT_CMD = 0.035
 
 _WTW_GAIT_TIMING_PARAMS = {
     "gait_frequency": 1.5,
@@ -150,7 +150,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
     )
     hip_pos_penalty_l1_leg_var = RewTerm(
         func=mdp.joint_pos_penalty_l1_leg_var,
-        weight=-0.2,
+        weight=-0.,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
@@ -162,7 +162,7 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
     )
     joint_pos_penalty_l1_leg_var = RewTerm(
         func=mdp.joint_pos_penalty_l1_leg_var,
-        weight=-0.2,
+        weight=-0.,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
@@ -317,8 +317,8 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         # Active-count mixture: 5% none, 60% one, 30% two, 5% all three.
         # Active axes: 25% range max, 25% range min, 50% uniform; then |cmd|<0.05 → 0.
         cmd.axis_active_count_prob = (0.05, 0.60, 0.30, 0.05)
-        cmd.axis_max_prob = (0.25, 0.25, 0.25)
-        cmd.axis_min_prob = (0.25, 0.25, 0.25)
+        cmd.axis_max_prob = (0.35, 0.35, 0.35)
+        cmd.axis_min_prob = (0.35, 0.35, 0.35)
         cmd.axis_deadzone = 0.05
 
         # No terrain mesh / curriculum on a plane.
@@ -334,10 +334,10 @@ class Go2WSymmetryFlatWtwEnvCfg(Go2WEnvSymmetryCfg):
         # Half of D435i-v0 curriculum (initial -0.04/-0.008 → final -0.75/-0.15).
         if getattr(self.curriculum, "hip_pos_penalty_l1", None) is not None:
             self.curriculum.hip_pos_penalty_l1.params["initial_weight"] = -0.04
-            self.curriculum.hip_pos_penalty_l1.params["final_weight"] = -0.2
+            self.curriculum.hip_pos_penalty_l1.params["final_weight"] = -0.1
         if getattr(self.curriculum, "joint_pos_penalty_l1", None) is not None:
             self.curriculum.joint_pos_penalty_l1.params["initial_weight"] = -0.008
-            self.curriculum.joint_pos_penalty_l1.params["final_weight"] = -0.04
+            self.curriculum.joint_pos_penalty_l1.params["final_weight"] = -0.02
         if getattr(self.curriculum, "track_lin_vel_xy_exp", None) is not None:
             self.curriculum.track_lin_vel_xy_exp.params["initial_weight"] = 10.0
             self.curriculum.track_lin_vel_xy_exp.params["final_weight"] = 10.0
