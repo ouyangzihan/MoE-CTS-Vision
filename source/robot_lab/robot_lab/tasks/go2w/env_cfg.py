@@ -79,8 +79,15 @@ D435I_DEPTH_HISTORY_LENGTH = (
 # (front_camera_joint xyz="0.354 -0.00003 0.018" in go2w_d435i.urdf).
 D435I_CAMERA_POS_BASE = (0.3533136, -0.00003, 0.0698006)
 D435I_CAMERA_POS_RANDOMIZATION_M = 0.01
-D435I_CAMERA_ROT_BASE = (0.9612616959383189, 0.0, 0.27563735581699916, 0.0)
-D435I_CAMERA_RPY_RANDOMIZATION_DEG = 3.0
+# Nominal 20 deg pitch-down about +Y (world convention: +X forward, +Z up).
+# Pitch DR ±5 deg → optical axis uniform in [15, 25] deg down, matching WMP
+# y_angle. Roll and yaw stay 0, matching WMP x_angle / z_angle. The URDF mesh
+# is still the old 32 deg bracket; rays use this quaternion, not the mesh rpy.
+D435I_CAMERA_PITCH_DOWN_DEG = 20.0
+_D435I_PITCH_HALF_RAD = math.radians(D435I_CAMERA_PITCH_DOWN_DEG) * 0.5
+D435I_CAMERA_ROT_BASE = (math.cos(_D435I_PITCH_HALF_RAD), 0.0, math.sin(_D435I_PITCH_HALF_RAD), 0.0)
+# (roll, pitch, yaw) half-ranges in degrees.
+D435I_CAMERA_RPY_RANDOMIZATION_DEG = (2.0, 5.0, 2.0)
 # Intel D400 post-process (same knobs as rl_sar moe_cts_d435i/config.yaml).
 # Disparity fx uses native 424-wide stream so spatial/temporal delta=20 matches deploy.
 D435I_RS_FILTERS_ENABLE = False

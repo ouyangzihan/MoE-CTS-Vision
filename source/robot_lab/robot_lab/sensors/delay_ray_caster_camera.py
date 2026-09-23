@@ -475,6 +475,23 @@ class DelayRayCasterCamera(RayCasterCamera):
             return data.output[data_type]
         return self._raw_output[data_type]
 
+    def _rpy_half_ranges_rad(self) -> tuple[float, float, float]:
+        """Per-axis randomization half-ranges (roll, pitch, yaw) in radians.
+
+        A scalar ``rpy_randomization_deg`` applies the same half-range to all
+        three axes. A length-3 tuple sets them independently.
+        """
+        spec = self.cfg.rpy_randomization_deg
+        if isinstance(spec, (int, float)):
+            rad = math.radians(float(spec))
+            return (rad, rad, rad)
+        roll_deg, pitch_deg, yaw_deg = spec
+        return (
+            math.radians(float(roll_deg)),
+            math.radians(float(pitch_deg)),
+            math.radians(float(yaw_deg)),
+        )
+
     def _uses_random_intrinsics(self) -> bool:
         return self.cfg.horizontal_fov_range is not None or self.cfg.vertical_fov_range is not None
 
@@ -487,11 +504,14 @@ class DelayRayCasterCamera(RayCasterCamera):
     def _randomize_rot(self, env_ids: Sequence[int] | torch.Tensor) -> None:
         env_ids = self._resolve_env_ids(env_ids)
         num_envs = len(env_ids)
-        deg = float(self.cfg.rpy_randomization_deg)
-        delta_rad = torch.empty(num_envs, 3, device=self._device).uniform_(
-            -math.radians(deg),
-            math.radians(deg),
-        )
+        roll_rad, pitch_rad, yaw_rad = self._rpy_half_ranges_rad()
+        delta_rad = torch.zeros(num_envs, 3, device=self._device)
+        if roll_rad > 0.0:
+            delta_rad[:, 0].uniform_(-roll_rad, roll_rad)
+        if pitch_rad > 0.0:
+            delta_rad[:, 1].uniform_(-pitch_rad, pitch_rad)
+        if yaw_rad > 0.0:
+            delta_rad[:, 2].uniform_(-yaw_rad, yaw_rad)
         delta_quat = quat_from_euler_xyz(delta_rad[:, 0], delta_rad[:, 1], delta_rad[:, 2])
         base = self._offset_quat_base.unsqueeze(0).expand(num_envs, -1)
         self._offset_quat[env_ids] = quat_mul(base, delta_quat)
@@ -556,7 +576,7 @@ class DelayRayCasterCameraCfg(RayCasterCameraCfg):
     randomize_intrinsics_on_reset: bool = False
     pos_randomization_range: tuple[float, float] | None = None
     randomize_pos_on_reset: bool = True
-    rpy_randomization_deg: float | None = None
+    rpy_randomization_deg: float | tuple[float, float, float] | None = None
     randomize_rot_on_reset: bool = True
 
     depth_norm_max: float = 10.0
@@ -626,8 +646,19 @@ class DelayRayCasterCameraCfg(RayCasterCameraCfg):
         if self.pos_randomization_range is not None:
             if self.pos_randomization_range[1] < self.pos_randomization_range[0]:
                 raise ValueError(f"Invalid pos_randomization_range: {self.pos_randomization_range}.")
-        if self.rpy_randomization_deg is not None and self.rpy_randomization_deg < 0.0:
-            raise ValueError(f"rpy_randomization_deg must be non-negative, got {self.rpy_randomization_deg}.")
+        if self.rpy_randomization_deg is not None:
+            spec = self.rpy_randomization_deg
+            if isinstance(spec, (int, float)):
+                ranges = (float(spec), float(spec), float(spec))
+            else:
+                if len(spec) != 3:
+                    raise ValueError(
+                        "rpy_randomization_deg tuple must be (roll, pitch, yaw) in degrees, "
+                        f"got {spec}."
+                    )
+                ranges = tuple(float(v) for v in spec)
+            if any(v < 0.0 for v in ranges):
+                raise ValueError(f"rpy_randomization_deg must be non-negative, got {self.rpy_randomization_deg}.")
         if self.depth_history_length > 0:
             skip = max(int(self.depth_history_skip_frames), 1)
             skip_span = (int(self.depth_num_output_frames) - 1) * skip + 1

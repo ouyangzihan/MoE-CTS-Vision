@@ -30,6 +30,7 @@ from utils import (
     export_cts_policy_as_onnx,
     log_moe_gating,
     log_rl_sar_deploy_hint,
+    pin_front_depth_camera_for_play,
 )
 
 # add argparse arguments
@@ -191,6 +192,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
     # disable randomization for play
+    pin_front_depth_camera_for_play(env_cfg, args_cli.task)
     env_cfg.observations.policy.enable_corruption = False
     # remove random pushing
     env_cfg.events.randomize_apply_external_force_torque = None

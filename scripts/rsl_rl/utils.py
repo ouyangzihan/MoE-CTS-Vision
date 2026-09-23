@@ -45,6 +45,34 @@ def log_rl_sar_deploy_hint(task_name: str, *, cnn_gru: bool) -> None:
     print(f"[INFO] Copy to {dest} for deploy.")
 
 
+def pin_front_depth_camera_for_play(env_cfg, task_name: str) -> None:
+    """Use a fixed depth-camera pose in play.
+
+    Pose domain randomization is turned off. Go2W D435i is pinned to the
+    training nominal (20 deg pitch-down). Other tasks keep their own nominal.
+    """
+    front_depth_camera = getattr(getattr(env_cfg, "scene", None), "front_depth_camera", None)
+    if front_depth_camera is None:
+        return
+    if hasattr(front_depth_camera, "pos_randomization_range"):
+        front_depth_camera.pos_randomization_range = None
+    if hasattr(front_depth_camera, "randomize_pos_on_reset"):
+        front_depth_camera.randomize_pos_on_reset = False
+    if hasattr(front_depth_camera, "rpy_randomization_deg"):
+        front_depth_camera.rpy_randomization_deg = None
+    if hasattr(front_depth_camera, "randomize_rot_on_reset"):
+        front_depth_camera.randomize_rot_on_reset = False
+    task = (task_name or "").split(":")[-1]
+    if "Go2W" in task and "D435" in task:
+        from robot_lab.tasks.go2w.env_cfg import D435I_CAMERA_PITCH_DOWN_DEG, D435I_CAMERA_ROT_BASE
+
+        front_depth_camera.offset.rot = D435I_CAMERA_ROT_BASE
+        print(
+            f"[INFO] Front depth camera pinned to {D435I_CAMERA_PITCH_DOWN_DEG:.0f} deg "
+            "pitch-down (no pose randomization)."
+        )
+
+
 def resolve_cts_single_obs_feature_dims(num_single_obs: int, num_actions: int) -> list[int]:
     """Infer per-term dims for CTS single_obs history layout.
 

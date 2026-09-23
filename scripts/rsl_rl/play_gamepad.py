@@ -55,6 +55,7 @@ from utils import (
     export_cts_policy_as_onnx,
     log_moe_gating,
     log_rl_sar_deploy_hint,
+    pin_front_depth_camera_for_play,
 )
 
 # add argparse arguments
@@ -680,18 +681,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # Keep depth camera extrinsics deterministic for teleop/play:
-    # use the configured default position/orientation with no DR on reset.
-    front_depth_camera = getattr(getattr(env_cfg, "scene", None), "front_depth_camera", None)
-    if front_depth_camera is not None:
-        if hasattr(front_depth_camera, "pos_randomization_range"):
-            front_depth_camera.pos_randomization_range = None
-        if hasattr(front_depth_camera, "randomize_pos_on_reset"):
-            front_depth_camera.randomize_pos_on_reset = False
-        if hasattr(front_depth_camera, "rpy_randomization_deg"):
-            front_depth_camera.rpy_randomization_deg = None
-        if hasattr(front_depth_camera, "randomize_rot_on_reset"):
-            front_depth_camera.randomize_rot_on_reset = False
+    pin_front_depth_camera_for_play(env_cfg, args_cli.task)
 
     if args_cli.disable_camera:
         _disable_front_depth_camera(env_cfg)
