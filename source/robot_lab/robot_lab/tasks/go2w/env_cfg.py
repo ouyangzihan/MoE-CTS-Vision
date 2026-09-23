@@ -83,7 +83,7 @@ D435I_CAMERA_ROT_BASE = (0.9612616959383189, 0.0, 0.27563735581699916, 0.0)
 D435I_CAMERA_RPY_RANDOMIZATION_DEG = 3.0
 # Intel D400 post-process (same knobs as rl_sar moe_cts_d435i/config.yaml).
 # Disparity fx uses native 424-wide stream so spatial/temporal delta=20 matches deploy.
-D435I_RS_FILTERS_ENABLE = True
+D435I_RS_FILTERS_ENABLE = False
 D435I_RS_USE_SPATIAL = True
 D435I_RS_SPATIAL_MAGNITUDE = 2
 D435I_RS_SPATIAL_ALPHA = 0.5
@@ -231,12 +231,12 @@ class Go2WD435iSceneCfg(Go2WSceneCfg):
         gaussian_blur_kernel_size=D435I_GAUSSIAN_BLUR_KERNEL_SIZE,
         enable_sensor_noise=True,
         use_env_cfg_noise_overrides=False,
-        sensor_noise_std= 0.002, # 0.02,
-        sensor_dropout_prob= 0.02, # 0.2,
-        sensor_depth_dependent_noise_scale= 0.05, # 0.5,
-        sensor_edge_speckle_prob= 0.004, # 0.04,
-        sensor_temporal_flicker_std= 0.0015, # 0.015,
-        sensor_hole_blob_prob= 0.0075, # 0.075,
+        sensor_noise_std= 0.00, # 0.02,
+        sensor_dropout_prob= 0.0, # 0.2,
+        sensor_depth_dependent_noise_scale= 0.0, # 0.5,
+        sensor_edge_speckle_prob= 0.00, # 0.04,
+        sensor_temporal_flicker_std= 0.00, # 0.015,
+        sensor_hole_blob_prob= 0.00, # 0.075,
         sensor_hole_blob_size_range=(3, 12),
         sensor_randomize_dropout_fill_value=True,
         sensor_dropout_fill_value=None,
@@ -354,8 +354,8 @@ def make_legacy_go2rl_gym_command_cfg() -> mdp.Go2RLGymCommandCfg:
     max, 10% range min, 20% uniform in range. Joint all-zero / limit-vel overrides
     are disabled.
     """
-    lin_vel = (-0.75, 0.75)
-    ang_vel = (-1.5, 1.5)
+    lin_vel = (-1, 1) # (-0.75, 0.75)
+    ang_vel = (-2, 2) # (-1.5, 1.5)
     return mdp.Go2RLGymCommandCfg(
         resampling_time=10.0,
         resampling_time_range=(10.0, 10.0),
@@ -884,21 +884,25 @@ class RewardsCfg:
     # Weight magnitude is 1.0 for later tuning; sign is negative (penalty).
     zero_cmd_lin_vel_x = RewTerm(
         func=mdp.zero_command_axis_motion,
-        weight=-1.0,
+        weight=0# -1.0,
         params={"axis": "vx", "command_name": "base_velocity", "command_threshold": 0.05},
     )
     zero_cmd_lin_vel_y = RewTerm(
         func=mdp.zero_command_axis_motion,
-        weight=-1.0,
+        weight=0# -1.0,
         params={"axis": "vy", "command_name": "base_velocity", "command_threshold": 0.05},
     )
     zero_cmd_ang_vel_z = RewTerm(
         func=mdp.zero_command_axis_motion,
-        weight=-1.0,
+        weight=0# -1.0,
         params={"axis": "yaw", "command_name": "base_velocity", "command_threshold": 0.05},
     )
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-1.0)#-2.0)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.025)#-0.05)
+    lin_vel_z_l2 = RewTerm(
+        func=mdp.lin_vel_z_l2,
+        weight=-0,  # -1.0, -2.0
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME)},
+    )
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.00)#-0.025)
     base_tilt_angle = RewTerm(func=mdp.base_tilt_angle, weight=0.0)
     local_terrain_tilt_angle = RewTerm(
         func=mdp.local_terrain_tilt_angle,
@@ -917,17 +921,17 @@ class RewardsCfg:
     )
     joint_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
-        weight=-1.0e-7,
+        weight=-1.0e-8, # -1.0e-7,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     joint_power = RewTerm(
         func=mdp.joint_power,
-        weight=-2e-5,
+        weight=-2e-6, # -2e-5,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     joint_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-1e-4,
+        weight=-1e-5, # -1e-4,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     base_height_l2 = RewTerm(
@@ -941,12 +945,12 @@ class RewardsCfg:
     )
     action_rate_l2 = RewTerm(
         func=mdp.action_rate_l2,
-        weight=-0.05,
+        weight=-0.0005, # -0.05,
         params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
     )
     action_smoothness_l2 = RewTerm(
         func=mdp.action_smoothness_l2,
-        weight=-0.05,
+        weight=-0.0005, # -0.05,
         params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
     )
     undesired_contacts = RewTerm(
@@ -1135,8 +1139,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "joint_pos_penalty_l1",
-            "initial_weight": -0.008,
-            "final_weight": -0.1, # -0.15
+            "initial_weight": -0.0008, # -0.008,
+            "final_weight": -0.001, # -0.01, # -0.15,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1145,8 +1149,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "hip_pos_penalty_l1",
-            "initial_weight": -0.04,
-            "final_weight": -0.5, # -0.75
+            "initial_weight": -0.004, # -0.04,
+            "final_weight": -0.005, # -0.05, # -0.75,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1166,7 +1170,7 @@ class CurriculumCfg:
         params={
             "term_name": "wheel_lateral_drag",
             "initial_weight": -0.0,
-            "final_weight": -0.08,
+            "final_weight": 0,#-0.08,
             "start_it": 0,
             "end_it": 2500,
         },
@@ -1185,8 +1189,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "local_terrain_tilt_angle",
-            "initial_weight": -0.3,
-            "final_weight": -0.6,
+            "initial_weight": -0.0, # -0.3,
+            "final_weight": -0.0, # -0.6,
             "start_it": 0,
             "end_it": 2500,
         },
@@ -1203,11 +1207,11 @@ class CurriculumCfg:
     )
     base_linear_velocity = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "lin_vel_z_l2", "initial_weight": -2.0, "final_weight": -0.0, "start_it": 0, "end_it": 1000},
+        params={"term_name": "lin_vel_z_l2", "initial_weight": -0.02, "final_weight": -0.02, "start_it": 0, "end_it": 1000}, #(-2,0)
     )
     base_height_l2 = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "base_height_l2", "initial_weight": -2.0, "final_weight": -40.0, "start_it": 0, "end_it": 2500},
+        params={"term_name": "base_height_l2", "initial_weight": -0.0, "final_weight": -0.0, "start_it": 0, "end_it": 2500}, #(-2,-40)
     )
 
 
@@ -1384,15 +1388,28 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
                 self.curriculum.depth_noise = None
         del depth_term
 
-    def __post_init__(self):
-        super().__post_init__()
-        # Active-count mixture: 5% none, 60% one, 30% two, 5% all three.
-        # Active axes: 25% range max, 25% range min, 50% uniform; then |cmd|<0.05 → 0.
-        cmd = self.commands.base_velocity
-        cmd.axis_active_count_prob = (0.05, 0.60, 0.30, 0.05)
+    def apply_velocity_command_mixture(self) -> None:
+        """Re-apply the D435i active-count mixture after command-delivery replacement.
+
+        ``configure_command_delivery`` installs a fresh Go2RLGym command config and
+        drops these fields. Play calls this again so resampling matches this task.
+        """
+        cmd = getattr(getattr(self, "commands", None), "base_velocity", None)
+        if cmd is None or not hasattr(cmd, "axis_active_count_prob"):
+            return
+        # 5% none, 30% one axis, 15% two, 5% all three, 45% positive vx only.
+        # Positive vx: vy = yaw = 0; 50% range max, 50% uniform in [0, max].
+        # Other active axes: 35% range max, 35% range min, 30% uniform; then |cmd|<0.05 → 0.
+        cmd.axis_active_count_prob = (0.05, 0.30, 0.15, 0.05)
+        cmd.positive_vx_prob = 0.45
+        cmd.positive_vx_max_prob = 0.5
         cmd.axis_max_prob = (0.35, 0.35, 0.35)
         cmd.axis_min_prob = (0.35, 0.35, 0.35)
         cmd.axis_deadzone = 0.05
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.apply_velocity_command_mixture()
         if self.scene.front_depth_camera is not None:
             self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
         self.apply_mgdp_depth_aux_settings()

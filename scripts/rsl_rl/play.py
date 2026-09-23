@@ -155,6 +155,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     use_pose_velocity = resolve_use_pose_velocity_command(env_cfg, args_cli)
     configure_command_delivery(env_cfg, use_pose_velocity=use_pose_velocity)
+    # configure_command_delivery replaces base_velocity; restore the task mixture.
+    if not use_pose_velocity and hasattr(env_cfg, "apply_velocity_command_mixture"):
+        env_cfg.apply_velocity_command_mixture()
     if hasattr(env_cfg, "apply_stand_still_scale_without_terrain"):
         env_cfg.apply_stand_still_scale_without_terrain()
     if use_pose_velocity:

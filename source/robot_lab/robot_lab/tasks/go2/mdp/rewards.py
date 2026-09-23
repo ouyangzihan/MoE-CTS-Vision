@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 from typing import TYPE_CHECKING
 
@@ -540,12 +542,54 @@ def base_height_l2(
     return reward
 
 
-def lin_vel_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize z-axis base linear velocity using L2 squared kernel."""
-    # extract the used quantities (to enable type-hinting)
-    asset: RigidObject = env.scene[asset_cfg.name]
-    reward = torch.square(asset.data.root_lin_vel_b[:, 2])
-    return reward
+class lin_vel_z_l2(ManagerTermBase):
+    """Penalize downward base speed only after a fall below the last stance.
+
+    A deadzone on ``|v_z|`` does not separate falling into a gap from hopping
+    over one. On this terrain the pit is 1 m deep and gap width is 0.25-1.0 m
+    with commanded forward speed up to 1 m/s, so a successful hop lands at
+    about 1-5 m/s downward — the same speeds a fall reaches partway down the pit.
+    Gait bounce is only about 0.3-0.5 m/s, so 1 m/s would ignore the trot, but
+    it would still tax every gap crossing wider than roughly 0.2 m.
+
+    While any foot is in contact, the term stores that base height. The penalty
+    stays 0 until the base is more than ``drop_threshold`` below it, which gait
+    bounce and a same-height hop do not do. Past that drop, the squared
+    world-frame downward speed is returned. ``drop_threshold`` is 0.35 m so a
+    step down of at most 0.25 m during a short flight is not treated as a fall.
+    """
+
+    def __init__(self, cfg: RewTerm, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._support_z = torch.zeros(env.num_envs, device=env.device)
+        self._has_support = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._has_support[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        sensor_cfg: SceneEntityCfg,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        drop_threshold: float = 0.35,
+        contact_force_threshold: float = 1.0,
+    ) -> torch.Tensor:
+        asset: RigidObject = env.scene[asset_cfg.name]
+        contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+        contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
+        supported = torch.linalg.norm(contact_forces, dim=-1).amax(dim=-1) > contact_force_threshold
+
+        base_z = asset.data.root_pos_w[:, 2]
+        self._support_z = torch.where(supported, base_z, self._support_z)
+        self._has_support |= supported
+
+        drop = self._support_z - base_z
+        fallen = self._has_support & (drop > drop_threshold)
+        downward_speed = torch.clamp(-asset.data.root_lin_vel_w[:, 2], min=0.0)
+        return torch.square(downward_speed) * fallen.float()
 
 
 def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

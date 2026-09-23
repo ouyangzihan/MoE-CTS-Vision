@@ -177,7 +177,10 @@ class WalkTheseWaysSymmetryRewardsCfg(RewardsCfg):
     lin_vel_z_l2 = RewTerm(
         func=mdp.lin_vel_z_l2_post_resample_boost,
         weight=-1.0,
-        params={**_POST_RESAMPLE_BOOST_PARAMS},
+        params={
+            **_POST_RESAMPLE_BOOST_PARAMS,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
+        },
     )
     ang_vel_xy_l2 = RewTerm(
         func=mdp.ang_vel_xy_l2_post_resample_boost,

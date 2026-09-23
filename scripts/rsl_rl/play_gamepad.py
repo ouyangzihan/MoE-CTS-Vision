@@ -209,7 +209,7 @@ def _far_plane_depth_image(
     sensor_cfg=None,
     data_type: str = "distance_to_image_plane",
     image_shape: tuple[int, int] | None = None,
-    max_depth: float = 10.0,
+    max_depth: float = 2.5,
     normalize: bool = True,
     use_delay: bool = True,
     enable_noise: bool = False,

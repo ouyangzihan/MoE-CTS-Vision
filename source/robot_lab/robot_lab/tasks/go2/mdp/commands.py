@@ -368,6 +368,18 @@ class Go2RLGymCommand(CommandTerm):
             axis_val = torch.where(u < max_cut, high, torch.where(u < min_cut, low, uniform))
             sampled[:, axis] = torch.where(active[:, axis], axis_val, zeros)
 
+        pos_vx_prob = float(self.cfg.positive_vx_prob)
+        if pos_vx_prob > 0.0:
+            pos_mask = torch.rand(n, device=self.device) < pos_vx_prob
+            if pos_mask.any():
+                high = self.env_command_ranges["lin_vel_x"][env_ids, 1].clamp(min=0.0)
+                use_max = torch.rand(n, device=self.device) < float(self.cfg.positive_vx_max_prob)
+                uniform = high * torch.rand(n, device=self.device)
+                vx = torch.where(use_max, high, uniform)
+                sampled[pos_mask, 0] = vx[pos_mask]
+                sampled[pos_mask, 1] = 0.0
+                sampled[pos_mask, 2] = 0.0
+
         deadzone = float(self.cfg.axis_deadzone)
         if deadzone > 0.0:
             sampled = torch.where(sampled.abs() < deadzone, torch.zeros_like(sampled), sampled)
@@ -529,6 +541,19 @@ class Go2RLGymCommandCfg(CommandTermCfg):
 
     Inactive axes are 0. When 1 or 2 axes are active, the subset is uniform among
     combinations of that size. ``axis_zero_prob`` is ignored in this mode.
+    Probabilities are normalized over this tuple. ``positive_vx_prob`` is applied
+    first, so these weights are the mixture on the remaining probability mass.
+    """
+    positive_vx_prob: float = 0.0
+    """Probability of a vx-only command (vy = yaw = 0), sampled before the active-count mixture.
+
+    With ``axis_active_count_prob=(0.05, 0.30, 0.15, 0.05)`` and ``positive_vx_prob=0.45``,
+    the overall rates are 5% / 30% / 15% / 5% / 45%.
+    """
+    positive_vx_max_prob: float = 0.5
+    """Within the vx-only mode, probability of the current ``lin_vel_x`` range maximum.
+
+    The rest is uniform in ``[0, max]``. ``axis_deadzone`` still zeros tiny samples.
     """
     axis_zero_prob: float | tuple[float, float, float] = 0.5
     """Probability of sampling exactly 0 when ``independent_axis_mixture`` is on.

@@ -15,7 +15,7 @@ from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.sensors import ContactSensor, RayCaster
 from isaaclab.utils.buffers import CircularBuffer
 from isaaclab.utils.math import quat_apply, quat_apply_inverse
-from robot_lab.tasks.go2.mdp.rewards import joint_pos_stand_still_scale
+from robot_lab.tasks.go2.mdp.rewards import joint_pos_stand_still_scale, lin_vel_z_l2
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -110,18 +110,28 @@ def track_ang_vel_z_exp_post_resample_boost(
     return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, weight_scale)
 
 
-def lin_vel_z_l2_post_resample_boost(
-    env: ManagerBasedRLEnv,
-    command_name: str = "base_velocity",
-    boost_duration_s: float = 0.75,
-    boost_scale: float = 2.0,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
+class lin_vel_z_l2_post_resample_boost(lin_vel_z_l2):
     """``lin_vel_z_l2`` with optional boost right after command changes."""
-    from robot_lab.tasks.go2.mdp.rewards import lin_vel_z_l2
 
-    reward = lin_vel_z_l2(env, asset_cfg=asset_cfg)
-    return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        sensor_cfg: SceneEntityCfg,
+        command_name: str = "base_velocity",
+        boost_duration_s: float = 0.75,
+        boost_scale: float = 2.0,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        drop_threshold: float = 0.35,
+        contact_force_threshold: float = 1.0,
+    ) -> torch.Tensor:
+        reward = super().__call__(
+            env,
+            sensor_cfg=sensor_cfg,
+            asset_cfg=asset_cfg,
+            drop_threshold=drop_threshold,
+            contact_force_threshold=contact_force_threshold,
+        )
+        return reward * _command_resample_boost_scale(env, command_name, boost_duration_s, boost_scale)
 
 
 def ang_vel_xy_l2_post_resample_boost(
