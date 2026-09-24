@@ -315,22 +315,22 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
     sub_terrains={
         "wave": with_slope_threshold(
             WaveTerrainCfg(
-                proportion=0.0,#0.1,
+                proportion=0.15,#0.1,
             ),
             10.0,  # effectively disable slope correction for wave terrain
         ),
         "slope_up": with_slope_threshold(
             terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
-                proportion=0.,
-                slope_range=(0.1, 0.568),
+                proportion=0.1,
+                slope_range=(0, 1),
                 platform_width=3.0,
             ),
             10.0,  # effectively disable slope correction for slope_up terrain
         ),
         "slope_down": with_slope_threshold(
             terrain_gen.HfPyramidSlopedTerrainCfg(
-                proportion=0.,
-                slope_range=(0.1, 0.568),
+                proportion=0.05,
+                slope_range=(0, 1),
                 platform_width=3.0,
             ),
             10.0,  # effectively disable slope correction for slope_down terrain
@@ -351,9 +351,9 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "stairs_up": with_slope_threshold(
             RandomWidthInvertedPyramidStairsTerrainCfg(
-                proportion=0.,#0.25,
+                proportion=0.35,#0.25,
                 # Baked mesh range. go2w curriculum raises effective lower bound via min terrain level.
-                step_height_range=(0.05, 0.25),
+                step_height_range=(0.0, 0.25),
                 step_width_range=(0.29, 0.37), # (0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -361,8 +361,8 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "stairs_down": with_slope_threshold(
             RandomWidthPyramidStairsTerrainCfg(
-                proportion=0.0,#0.05,
-                step_height_range=(0.05, 0.25),
+                proportion=0.1,#0.05,
+                step_height_range=(0.0, 0.25),
                 step_width_range=(0.29, 0.37), # (0.29, 0.34),
                 platform_width=3.0,
             ),
@@ -388,7 +388,7 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
         ),
         "obstacles": with_slope_threshold(
             terrain_gen.HfDiscreteObstaclesTerrainCfg(
-                proportion=0.,#0.2,
+                proportion=0.15,#0.2,
                 obstacle_width_range=(2.0, 4.0), # (1.0, 2.0),
                 obstacle_height_range=(0.1, 0.5), # (0.05, 0.275),
                 num_obstacles=5, # 20,
@@ -408,8 +408,8 @@ TERRAIN_CFG = Go2TerrainGeneratorCfg(
             0.25,
         ),
         "gap": terrain_gen.MeshGapTerrainCfg(
-            proportion=1,#0.2,
-            gap_width_range=(0.4, 1.0), # (0.0, 0.9),
+            proportion=0.1,#0.2,
+            gap_width_range=(0., 1.0), # (0.0, 0.9),
             platform_width=3.0,
         ),
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.0),

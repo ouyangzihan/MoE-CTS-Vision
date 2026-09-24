@@ -490,11 +490,7 @@ class RewardsCfg:
         weight=1.0, 
         params={"command_name": "base_velocity", "std": 0.5}
     )
-    lin_vel_z_l2 = RewTerm(
-        func=mdp.lin_vel_z_l2,
-        weight=-2.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME)},
-    )
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     
     # The joint_acc reward is not computed on the same scale in Gym and Lab.

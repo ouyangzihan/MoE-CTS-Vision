@@ -43,7 +43,7 @@ FOOT_LINK_NAME = ".*_foot"
 BASE_HEIGHT_TARGET = 0.409
 WHEEL_RADIUS = 0.087
 # Per-episode additive IMU gyro bias (rad/s), sampled uniformly at reset.
-GYRO_BIAS_RANGE = (-0.1, 0.1)
+GYRO_BIAS_RANGE = (-0., 0.)
 
 # --- Camera ---
 D435I_DEPTH_WIDTH = 60
@@ -64,8 +64,8 @@ D435I_CAMERA_UPDATE_HZ = 50.0
 D435I_CAMERA_UPDATE_PERIOD = 1.0 / D435I_CAMERA_UPDATE_HZ
 # Depth age in sensor frames @ 50 Hz (1 frame = 20 ms) → 40–120 ms.
 # Applied to the processed stream before skip-sampling history (real D435i lag).
-D435I_CAMERA_MIN_DELAY_FRAMES = 2
-D435I_CAMERA_MAX_DELAY_FRAMES = 6
+D435I_CAMERA_MIN_DELAY_FRAMES = 0
+D435I_CAMERA_MAX_DELAY_FRAMES = 0
 D435I_CAMERA_MIN_DELAY = D435I_CAMERA_MIN_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
 D435I_CAMERA_MAX_DELAY = D435I_CAMERA_MAX_DELAY_FRAMES * D435I_CAMERA_UPDATE_PERIOD
 # Ring = transport delay + skip stack so history can be read from the delayed stream.
@@ -78,7 +78,7 @@ D435I_DEPTH_HISTORY_LENGTH = (
 # composed URDF chain: base -> front_camera -> camera_base -> camera_d435
 # (front_camera_joint xyz="0.354 -0.00003 0.018" in go2w_d435i.urdf).
 D435I_CAMERA_POS_BASE = (0.3533136, -0.00003, 0.0698006)
-D435I_CAMERA_POS_RANDOMIZATION_M = 0.01
+D435I_CAMERA_POS_RANDOMIZATION_M = 0.0
 # Nominal 20 deg pitch-down about +Y (world convention: +X forward, +Z up).
 # Pitch DR ±5 deg → optical axis uniform in [15, 25] deg down, matching WMP
 # y_angle. Roll and yaw stay 0, matching WMP x_angle / z_angle. The URDF mesh
@@ -87,7 +87,7 @@ D435I_CAMERA_PITCH_DOWN_DEG = 20.0
 _D435I_PITCH_HALF_RAD = math.radians(D435I_CAMERA_PITCH_DOWN_DEG) * 0.5
 D435I_CAMERA_ROT_BASE = (math.cos(_D435I_PITCH_HALF_RAD), 0.0, math.sin(_D435I_PITCH_HALF_RAD), 0.0)
 # (roll, pitch, yaw) half-ranges in degrees.
-D435I_CAMERA_RPY_RANDOMIZATION_DEG = (2.0, 5.0, 2.0)
+D435I_CAMERA_RPY_RANDOMIZATION_DEG = (.0, .0, .0)
 # Intel D400 post-process (same knobs as rl_sar moe_cts_d435i/config.yaml).
 # Disparity fx uses native 424-wide stream so spatial/temporal delta=20 matches deploy.
 D435I_RS_FILTERS_ENABLE = False
@@ -361,8 +361,8 @@ def make_legacy_go2rl_gym_command_cfg() -> mdp.Go2RLGymCommandCfg:
     max, 10% range min, 20% uniform in range. Joint all-zero / limit-vel overrides
     are disabled.
     """
-    lin_vel = (-1, 1) # (-0.75, 0.75)
-    ang_vel = (-2, 2) # (-1.5, 1.5)
+    lin_vel = (-0.75, 0.75)
+    ang_vel = (-1.5, 1.5)
     return mdp.Go2RLGymCommandCfg(
         resampling_time=10.0,
         resampling_time_range=(10.0, 10.0),
@@ -761,7 +761,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=BASE_LINK_NAME),
-            "mass_distribution_params": (-1.0, 1.0),
+            "mass_distribution_params": (-.0, .0),
             "operation": "add",
             "recompute_inertia": True,
         },
@@ -771,7 +771,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="^(?!.*base).*"),
-            "mass_distribution_params": (0.9, 1.1),
+            "mass_distribution_params": (1, 1),
             "operation": "scale",
             "recompute_inertia": True,
         },
@@ -781,14 +781,14 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=BASE_LINK_NAME),
-            "com_range": {"x": (-0.03, 0.03), "y": (-0.03, 0.03), "z": (-0.03, 0.03)},
+            "com_range": {"x": (-0.0, 0.0), "y": (-0.0, 0.0), "z": (-0.0, 0.0)},
         },
     )
     reset_robot_joints = EventTerm(
         func=mdp.reset_joints_by_scale,
         mode="reset",
         params={
-            "position_range": (0.5, 1.5),
+            "position_range": (0., 0),
             "velocity_range": (0.0, 0.0),
         },
     )
@@ -797,8 +797,8 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "stiffness_distribution_params": (0.9, 1.1),
-            "damping_distribution_params": (0.9, 1.1),
+            "stiffness_distribution_params": (1, 1.),
+            "damping_distribution_params": (1, 1.),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -808,7 +808,7 @@ class EventCfg:
         mode="reset",
         params={
             "action_term_name": "joint_pos",
-            "offset_range": (-0.1, 0.1),
+            "offset_range": (-0., 0.),
         },
     )
     randomize_gyro_bias = EventTerm(
@@ -819,14 +819,14 @@ class EventCfg:
     randomize_push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(4.0, 4.0),
+        interval_range_s=(.0, .0),
         params={
             "velocity_range": {
-                "x": (-0.4, 0.4),
-                "y": (-0.4, 0.4),
-                "roll": (-0.6, 0.6),
-                "pitch": (-0.6, 0.6),
-                "yaw": (-0.6, 0.6),
+                "x": (-0., 0.),
+                "y": (-0., 0.),
+                "roll": (-0., 0.),
+                "pitch": (-0., 0.),
+                "yaw": (-0., 0.),
             }
         },
     )
@@ -835,9 +835,9 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.2, 1.5),
-            "dynamic_friction_range": (0.2, 1.5),
-            "restitution_range": (0.0, 0.5),
+            "static_friction_range": (1, 1.),
+            "dynamic_friction_range": (1, 1.),
+            "restitution_range": (0.25, 0.25),
             "num_buckets": 64,
             "make_consistent": True,
         },
@@ -846,14 +846,14 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (0.0, 0.2), "yaw": (-3.14, 3.14)},
+            "pose_range": {"x": (-0., 0.), "y": (-0., 0.), "z": (0.0, 0.), "yaw": (-0, 0)},
             "velocity_range": {
-                "x": (-0.5, 0.5),
-                "y": (-0.5, 0.5),
-                "z": (-0.5, 0.5),
-                "roll": (-0.5, 0.5),
-                "pitch": (-0.5, 0.5),
-                "yaw": (-0.5, 0.5),
+                "x": (-0., 0.),
+                "y": (-0., 0.),
+                "z": (-0., 0.),
+                "roll": (-0., 0.),
+                "pitch": (-0., 0.),
+                "yaw": (-0., 0.),
             },
         },
     )
@@ -891,29 +891,25 @@ class RewardsCfg:
     # Weight magnitude is 1.0 for later tuning; sign is negative (penalty).
     zero_cmd_lin_vel_x = RewTerm(
         func=mdp.zero_command_axis_motion,
-        weight=0# -1.0,
+        weight=0,# -1.0,
         params={"axis": "vx", "command_name": "base_velocity", "command_threshold": 0.05},
     )
     zero_cmd_lin_vel_y = RewTerm(
         func=mdp.zero_command_axis_motion,
-        weight=0# -1.0,
+        weight=0,# -1.0,
         params={"axis": "vy", "command_name": "base_velocity", "command_threshold": 0.05},
     )
     zero_cmd_ang_vel_z = RewTerm(
         func=mdp.zero_command_axis_motion,
-        weight=0# -1.0,
+        weight=0,# -1.0,
         params={"axis": "yaw", "command_name": "base_velocity", "command_threshold": 0.05},
     )
-    lin_vel_z_l2 = RewTerm(
-        func=mdp.lin_vel_z_l2,
-        weight=-0,  # -1.0, -2.0
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME)},
-    )
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0)#-1.0)#-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.00)#-0.025)
     base_tilt_angle = RewTerm(func=mdp.base_tilt_angle, weight=0.0)
     local_terrain_tilt_angle = RewTerm(
         func=mdp.local_terrain_tilt_angle,
-        weight=-0.2,
+        weight=-0.,
         params={
             "height_sensor_cfg": SceneEntityCfg("local_terrain_scanner"),
             "contact_sensor_cfg": SceneEntityCfg(
@@ -943,7 +939,7 @@ class RewardsCfg:
     )
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
-        weight=-1.0,
+        weight=-.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=BASE_LINK_NAME),
             "target_height": BASE_HEIGHT_TARGET,
@@ -952,12 +948,12 @@ class RewardsCfg:
     )
     action_rate_l2 = RewTerm(
         func=mdp.action_rate_l2,
-        weight=-0.0005, # -0.05,
+        weight=0, # -0.05,
         params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
     )
     action_smoothness_l2 = RewTerm(
         func=mdp.action_smoothness_l2,
-        weight=-0.0005, # -0.05,
+        weight=0, # -0.05,
         params={"leg_dim": len(LEG_JOINT_NAMES), "wheel_scale": 0.2},
     )
     undesired_contacts = RewTerm(
@@ -969,6 +965,17 @@ class RewardsCfg:
                 body_names=".*_hip|.*_thigh|.*calf|Head_.*|.*_foot_motor|camera_base",
             ),
             "threshold": 5.0,
+        },
+    )
+    # Encourage hopping over gaps: per-landing reward sum(last_air_time - threshold).
+    # Event-based, so its per-landing value is weight * sum * step_dt (not per second).
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time,
+        weight=0,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
+            "threshold": 0.25,
         },
     )
     wheels_not_in_contact = RewTerm(
@@ -1011,7 +1018,7 @@ class RewardsCfg:
     )
     feet_regulation = RewTerm(
         func=mdp.feet_regulation,
-        weight=-0.05,
+        weight=0,
         params={
             "base_height_target": BASE_HEIGHT_TARGET,
             "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_LINK_NAME),
@@ -1021,7 +1028,7 @@ class RewardsCfg:
     )
     hip_pos_penalty_l1 = RewTerm(
         func=mdp.joint_pos_penalty_l1,
-        weight=-0.04,#-0.05,
+        weight=0,#-0.05,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
@@ -1035,7 +1042,7 @@ class RewardsCfg:
     )
     joint_pos_penalty_l1 = RewTerm(
         func=mdp.joint_pos_penalty_l1,
-        weight=-0.008,#-0.01,
+        weight=0,#-0.01,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_(thigh|calf)_joint"),
@@ -1147,7 +1154,7 @@ class CurriculumCfg:
         params={
             "term_name": "joint_pos_penalty_l1",
             "initial_weight": -0.0008, # -0.008,
-            "final_weight": -0.001, # -0.01, # -0.15,
+            "final_weight": -0.0008, # -0.01, # -0.15,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1157,7 +1164,7 @@ class CurriculumCfg:
         params={
             "term_name": "hip_pos_penalty_l1",
             "initial_weight": -0.004, # -0.04,
-            "final_weight": -0.005, # -0.05, # -0.75,
+            "final_weight": -0.004, # -0.05, # -0.75,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1214,7 +1221,7 @@ class CurriculumCfg:
     )
     base_linear_velocity = CurrTerm(
         mdp.gradual_reward_weight_modification,
-        params={"term_name": "lin_vel_z_l2", "initial_weight": -0.02, "final_weight": -0.02, "start_it": 0, "end_it": 1000}, #(-2,0)
+        params={"term_name": "lin_vel_z_l2", "initial_weight": -0.0, "final_weight": -0.0, "start_it": 0, "end_it": 1000}, #(-2,0)
     )
     base_height_l2 = CurrTerm(
         mdp.gradual_reward_weight_modification,
@@ -1265,7 +1272,7 @@ class Go2WEnvCfg(ManagerBasedRLEnvCfg):
     # Applied at physics rate (sim.dt), distinct from actuator cmd delay and
     # from D435i camera max_delay. Set max to 0 to disable.
     obs_delay_min_s: float = 0.0
-    obs_delay_max_s: float = 0.005
+    obs_delay_max_s: float = 0.00
 
     def __post_init__(self):
         """Post initialization."""
@@ -1337,8 +1344,8 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
     # geometry alignment / harsher noise curriculum). False = current pipeline.
     use_mgdp_depth_aux: bool = False
     # Runtime noise overrides written by depth_noise_curriculum when aux is on.
-    depth_noise_std: float = 0.02
-    depth_dropout_prob: float = 0.2
+    depth_noise_std: float = 0.0
+    depth_dropout_prob: float = 0.
     depth_dependent_noise_scale: float = 0.0
     depth_edge_speckle_prob: float = 0.0
     depth_temporal_flicker_std: float = 0.0
@@ -1376,8 +1383,8 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
                     "start_it": 0,
                     "end_it": 10000,
                     "num_steps_per_iter": 24,
-                    "noise_std_range": (0.02, 0.02), # (0.02, 0.06),
-                    "dropout_prob_range": (0.2, 0.2),
+                    "noise_std_range": (0.0, 0.0), # (0.02, 0.06),
+                    "dropout_prob_range": (0., 0.),
                     "depth_dependent_noise_scale_range": (0.0, 0.0), # (0.0, 1.0),
                     "edge_speckle_prob_range": (0.0, 0.0), # (0.0, 0.08),
                     "temporal_flicker_std_range": (0.0, 0.0), # (0.0, 0.03),
