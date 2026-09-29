@@ -20,7 +20,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,
@@ -71,6 +71,8 @@ class RslRlMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsActorCriticCfg):
     # MGDP-style aux heads (denoise / height recon / align). Synced from
     # Go2WD435iEnvCfg.use_mgdp_depth_aux in train.py; keep False for current pipeline.
     enable_depth_aux = False
+    # Play sets this False when a checkpoint has aux heads but the env switch is off.
+    require_depth_aux_obs = True
     height_map_shape = (17, 11)
     depth_align_dim = 32
     clean_depth_obs_group = "clean_depth"
@@ -114,7 +116,7 @@ class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     detach_gate_in_student_surrogate = True  # PPO must not train the router (winner-take-all)
     use_clipped_value_loss = True
     clip_param = 0.2
-    entropy_coef = 0.01
+    entropy_coef = 0.005
     num_learning_epochs = 5
     num_mini_batches = 4
     learning_rate = 5e-4 # 1e-3

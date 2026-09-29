@@ -176,6 +176,12 @@ class DepthCNNGRUEncoder(nn.Module):
             self.hidden_state = next_hidden_state.detach()
         return out.squeeze(0)
 
+    def next_hidden(self, image: torch.Tensor, hidden_state: torch.Tensor | None) -> torch.Tensor:
+        """Advance an external hidden state by one frame without touching ``self.hidden_state``."""
+        features = self._encode_cnn(image, (image.shape[0],)).unsqueeze(0)
+        _, next_hidden_state = self.gru(features, hidden_state)
+        return next_hidden_state
+
     def decode_depth(self, image: torch.Tensor) -> torch.Tensor:
         """Predict clean depth in obs space ``[N, H*W]`` (Sigmoid × depth_obs_scale)."""
         if self.depth_decoder is None:
@@ -242,6 +248,7 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         gru_num_layers: int = 1,
         depth_num_frames: int = 1,
         enable_depth_aux: bool = False,
+        require_depth_aux_obs: bool = True,
         height_map_shape: tuple[int, int] = (17, 11),
         depth_align_dim: int = 32,
         clean_depth_obs_group: str = "clean_depth",
@@ -272,20 +279,28 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         self.num_single_obs = obs["single_obs"].shape[-1]
         self.image_shape = tuple(image_shape)
         self.enable_depth_aux = bool(enable_depth_aux)
+        self.require_depth_aux_obs = bool(require_depth_aux_obs)
         self.clean_depth_obs_group = clean_depth_obs_group
         self.height_map_obs_group = height_map_obs_group
         resolved_height_map_shape = tuple(height_map_shape)
         if self.enable_depth_aux:
             missing = [g for g in (clean_depth_obs_group, height_map_obs_group) if g not in obs.keys()]
-            if missing:
+            if missing and self.require_depth_aux_obs:
                 raise ValueError(
                     "enable_depth_aux=True requires observation groups "
                     f"{clean_depth_obs_group!r} and {height_map_obs_group!r} in the env TensorDict. "
                     f"Missing: {missing}. Set Go2WD435iEnvCfg.use_mgdp_depth_aux=True."
                 )
-            height_dim = int(obs[height_map_obs_group].shape[-1])
-            if math.prod(resolved_height_map_shape) != height_dim:
-                resolved_height_map_shape = (1, height_dim)
+            if missing:
+                print(
+                    "[INFO] Depth-aux heads built without observation groups "
+                    f"{missing}; using height_map_shape={resolved_height_map_shape}. "
+                    "Aux losses stay off until those groups exist."
+                )
+            else:
+                height_dim = int(obs[height_map_obs_group].shape[-1])
+                if math.prod(resolved_height_map_shape) != height_dim:
+                    resolved_height_map_shape = (1, height_dim)
 
         self.student_cnn_gru = DepthCNNGRUEncoder(
             image_shape=self.image_shape,

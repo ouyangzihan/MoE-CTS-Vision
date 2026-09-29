@@ -21,6 +21,50 @@ def log_moe_gating(policy: object) -> None:
     print(f"[INFO] MoE student gating: expert_num={expert_num}, gating_top_k={gating_top_k} ({mode})")
 
 
+def sync_depth_aux_heads_from_checkpoint(agent_cfg: object, checkpoint_path: str) -> None:
+    """Match student aux heads to a checkpoint that was trained with them.
+
+    Play keeps ``use_mgdp_depth_aux`` off, so the student is built without the
+    depth decoder, height decoder, and alignment layers. Those checkpoints then
+    fail ``load_state_dict``. Inference does not use the heads; they only need
+    to exist so the saved weights and the student optimizer state line up.
+    """
+    policy = getattr(agent_cfg, "policy", None)
+    if policy is None or not hasattr(policy, "enable_depth_aux"):
+        return
+    try:
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        print(f"[WARN] Could not inspect checkpoint for depth-aux heads: {exc}")
+        return
+    if not isinstance(ckpt, dict):
+        return
+    state_dict = ckpt.get("model_state_dict")
+    if not isinstance(state_dict, dict):
+        return
+    height_w = state_dict.get("student_cnn_gru.height_decoder.2.weight")
+    if height_w is None:
+        return
+    policy.enable_depth_aux = True
+    if hasattr(policy, "require_depth_aux_obs"):
+        policy.require_depth_aux_obs = False
+    height_dim = int(height_w.shape[0])
+    configured = getattr(policy, "height_map_shape", None) or ()
+    configured_dim = 1
+    for size in configured:
+        configured_dim *= int(size)
+    if configured_dim != height_dim:
+        policy.height_map_shape = (1, height_dim)
+    align_w = state_dict.get("student_cnn_gru.depth_align_proj.0.weight")
+    if align_w is not None and hasattr(policy, "depth_align_dim"):
+        policy.depth_align_dim = int(align_w.shape[0])
+    print(
+        "[INFO] Checkpoint includes MGDP depth-aux heads; "
+        f"enable_depth_aux=True (height_map_dim={height_dim}) so those weights load. "
+        "Inference does not use the heads."
+    )
+
+
 def apply_moe_gating_cfg(agent_cfg: object) -> None:
     """Re-pin student MoE width/gating after Hydra ``from_dict`` (train and play)."""
     if hasattr(agent_cfg, "apply_moe_gating"):

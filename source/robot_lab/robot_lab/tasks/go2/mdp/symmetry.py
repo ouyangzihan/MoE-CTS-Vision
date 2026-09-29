@@ -487,21 +487,29 @@ class Go2MoECTSSymmetry:
                 masks_batch,
             )
 
-    def repeat_recurrent_hidden_state(self, hidden_state, teacher_trajectories: int):
-        """Repeat recurrent hidden states for original and mirrored trajectories.
+    def repeat_recurrent_hidden_state(self, hidden_state, teacher_trajectories: int, mirrored_hidden_state=None):
+        """Seed original and mirrored trajectories with their recurrent hidden states.
 
-        Hidden states are duplicated, not mirrored, because they are rollout
-        memory seeds for the corresponding original/mirrored observation
-        sequences.
+        A GRU state cannot be mirrored directly, so mirrored trajectories use
+        ``mirrored_hidden_state`` (the rollout-side state from the mirrored
+        observation stream) when available, else a copy of the original seed.
         """
         if hidden_state is None:
             return None
         if isinstance(hidden_state, tuple):
-            return tuple(self.repeat_recurrent_hidden_state(state, teacher_trajectories) for state in hidden_state)
+            mirrored = mirrored_hidden_state if mirrored_hidden_state is not None else (None,) * len(hidden_state)
+            return tuple(
+                self.repeat_recurrent_hidden_state(state, teacher_trajectories, mirrored_state)
+                for state, mirrored_state in zip(hidden_state, mirrored)
+            )
+        if mirrored_hidden_state is None:
+            mirrored_hidden_state = hidden_state
 
         teacher_hidden = hidden_state[:, :teacher_trajectories]
         student_hidden = hidden_state[:, teacher_trajectories:]
-        return torch.cat([teacher_hidden, teacher_hidden, student_hidden, student_hidden], dim=1)
+        teacher_mirrored = mirrored_hidden_state[:, :teacher_trajectories]
+        student_mirrored = mirrored_hidden_state[:, teacher_trajectories:]
+        return torch.cat([teacher_hidden, teacher_mirrored, student_hidden, student_mirrored], dim=1)
 
     def repeat_recurrent_time_env(self, value: torch.Tensor, teacher_envs: int) -> torch.Tensor:
         """Repeat teacher and student time/env tensors along the env axis."""
@@ -574,12 +582,13 @@ class Go2MoECTSSymmetry:
         returns_batch = self.repeat_recurrent_time_env(returns_batch, teacher_envs)
         old_actions_log_prob_batch = self.repeat_recurrent_time_env(old_actions_log_prob_batch, teacher_envs)
 
+        mirrored_hidden_states = masks_batch.get("mirrored_hidden_states") or (None,) * len(hidden_states_batch)
         hidden_states_batch = tuple(
-            self.repeat_recurrent_hidden_state(hidden_state, teacher_trajectories)
-            for hidden_state in hidden_states_batch
+            self.repeat_recurrent_hidden_state(hidden_state, teacher_trajectories, mirrored_hidden_state)
+            for hidden_state, mirrored_hidden_state in zip(hidden_states_batch, mirrored_hidden_states)
         )
         masks_batch = {
-            **masks_batch,
+            **{k: v for k, v in masks_batch.items() if k != "mirrored_hidden_states"},
             "masks": self.repeat_recurrent_masks(masks_batch["masks"], teacher_trajectories),
             "teacher_trajectories": teacher_trajectories * self.num_aug,
             "teacher_envs": teacher_envs * self.num_aug,

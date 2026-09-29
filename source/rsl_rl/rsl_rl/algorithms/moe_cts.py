@@ -95,6 +95,10 @@ class MoECTS:
         self.symmetry = symmetry
         if self.rnd is not None and self.symmetry is not None:
             raise RuntimeError("RND is not supported with MoECTS symmetry data augmentation.")
+        # Student GRU state driven by L/R-mirrored depth, so mirrored training sequences
+        # start from a memory consistent with their observations.
+        self.track_mirrored_hidden = self.symmetry is not None and hasattr(policy, "student_cnn_gru")
+        self.mirrored_student_hidden: torch.Tensor | None = None
 
         # PPO components
         self.policy = policy
@@ -191,7 +195,13 @@ class MoECTS:
         
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
-            self.transition.hidden_states = self._reorder_hidden_states(self.policy.get_hidden_states())
+            hidden_states = self.policy.get_hidden_states()
+            self.transition.hidden_states = self._reorder_hidden_states(hidden_states)
+            if self.track_mirrored_hidden:
+                self.transition.mirrored_hidden_states = self._reorder_hidden_states(
+                    (self._mirrored_hidden_for_storage(hidden_states[0]), None)
+                )
+                self._advance_mirrored_hidden(obs)
 
         # Compute the actions and values
         ti, si = self.teacher_env_idxs, self.student_env_idxs
@@ -245,6 +255,35 @@ class MoECTS:
         indices = torch.cat([self.teacher_env_idxs, self.student_env_idxs], dim=0)
         return tuple(self._index_hidden_state(hidden_state, indices) for hidden_state in hidden_states)
 
+    def _mirrored_hidden_for_storage(self, student_hidden: torch.Tensor | None) -> torch.Tensor | None:
+        """Pre-step mirrored GRU state in env order; teacher envs keep the original state (unused by losses)."""
+        if student_hidden is None or self.mirrored_student_hidden is None:
+            return None
+        stored = self.mirrored_student_hidden.clone()
+        stored[:, self.teacher_env_idxs] = student_hidden[:, self.teacher_env_idxs]
+        return stored
+
+    def _advance_mirrored_hidden(self, obs: TensorDict) -> None:
+        """Step the mirrored GRU state on horizontally flipped depth for student envs."""
+        si = self.student_env_idxs
+        if len(si) == 0:
+            return
+        groups = self.policy.actor_image_obs_groups
+        with torch.no_grad():
+            mirrored_obs = {group: self.symmetry.mapper.reverse_obs_group(group, obs[group][si]) for group in groups}
+            image = self.policy._image_obs(mirrored_obs, groups)
+            prev = None if self.mirrored_student_hidden is None else self.mirrored_student_hidden[:, si]
+            next_hidden = self.policy.student_cnn_gru.next_hidden(image, prev)
+            if self.mirrored_student_hidden is None:
+                self.mirrored_student_hidden = torch.zeros(
+                    next_hidden.shape[0],
+                    self.teacher_num_envs + self.student_num_envs,
+                    next_hidden.shape[-1],
+                    device=next_hidden.device,
+                    dtype=next_hidden.dtype,
+                )
+            self.mirrored_student_hidden[:, si] = next_hidden
+
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
@@ -280,6 +319,8 @@ class MoECTS:
         self.storage.add_transition(self.transition)
         self.transition.clear()
         self.policy.reset(dones)
+        if self.mirrored_student_hidden is not None:
+            self.mirrored_student_hidden[:, dones == 1, :] = 0.0
 
     def compute_returns(self, obs: TensorDict) -> None:
         st = self.storage
@@ -713,6 +754,8 @@ class MoECTS:
         mean_height_recon_loss = 0
         mean_depth_align_loss = 0
         mean_student_surrogate_loss = 0
+        mean_latent_loss_original = 0.0
+        mean_latent_loss_mirrored = 0.0
         moe_gate_prob_sum = None
         moe_top1_count_sum = None
         moe_gate_entropy_sum = 0.0
@@ -937,6 +980,12 @@ class MoECTS:
             gating_weights = self._flatten_time_env(gating_weights)
             latent_loss = (teacher_latent - student_latent).pow(2).mean()
             with torch.no_grad():
+                if self.symmetry is not None:
+                    # Env-major flatten: the first 1/num_aug of student samples are the original sequences.
+                    num_original = student_latent.shape[0] // num_aug
+                    sq_err = (teacher_latent - student_latent).pow(2)
+                    mean_latent_loss_original += sq_err[:num_original].mean().item()
+                    mean_latent_loss_mirrored += sq_err[num_original:].mean().item()
                 if moe_gate_prob_sum is None:
                     expert_num = gating_weights.shape[-1]
                     moe_gate_prob_sum = torch.zeros(expert_num, device=self.device)
@@ -1040,6 +1089,9 @@ class MoECTS:
             "mean_height_recon_loss": mean_height_recon_loss,
             "mean_depth_align_loss": mean_depth_align_loss,
         }
+        if self.symmetry is not None:
+            loss_dict["mean_latent_loss_original"] = mean_latent_loss_original / num_updates
+            loss_dict["mean_latent_loss_mirrored"] = mean_latent_loss_mirrored / num_updates
         if moe_sample_count > 0 and moe_gate_prob_sum is not None and moe_top1_count_sum is not None:
             mean_gate_probs = moe_gate_prob_sum / moe_sample_count
             top1_freq = moe_top1_count_sum / moe_sample_count

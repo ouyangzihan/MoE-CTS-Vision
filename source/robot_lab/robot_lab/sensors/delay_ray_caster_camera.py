@@ -167,6 +167,11 @@ class DelayRayCasterCamera(RayCasterCamera):
         if self.cfg.rpy_randomization_deg is not None:
             self._randomize_rot(self._ALL_INDICES)
 
+    def update(self, dt: float, force_recompute: bool = False):
+        # Lazy scene updates only raycast on ``.data`` access; the history/delay rings
+        # must be fed every camera tick even when nothing reads ``.data``.
+        super().update(dt, force_recompute=True)
+
     def reset(self, env_ids: Sequence[int] | None = None):
         super().reset(env_ids)
         if not hasattr(self, "_ALL_INDICES"):
@@ -410,6 +415,8 @@ class DelayRayCasterCamera(RayCasterCamera):
         """
         if not hasattr(self, "_processed_history"):
             raise RuntimeError("Processed depth history is disabled on this camera cfg.")
+        # Envs reset since the last scene update are outdated until a capture is taken.
+        self._update_outdated_buffers()
         env_ids = self._resolve_env_ids(env_ids)
         latest_index = (self._processed_write_index[env_ids] - 1) % self._processed_history_length
         if use_delay and hasattr(self, "_delay_steps"):

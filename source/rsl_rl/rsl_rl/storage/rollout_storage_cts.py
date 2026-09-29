@@ -34,6 +34,8 @@ class RolloutStorageCTS:
             self.action_mean: torch.Tensor | None = None
             self.action_sigma: torch.Tensor | None = None
             self.hidden_states: tuple[HiddenState, HiddenState] = (None, None)
+            # Student GRU state from the L/R-mirrored observation stream (symmetry augmentation).
+            self.mirrored_hidden_states: tuple[HiddenState, HiddenState] = (None, None)
 
         def clear(self) -> None:
             self.__init__()
@@ -83,6 +85,7 @@ class RolloutStorageCTS:
         # For RNN networks
         self.saved_hidden_state_a = None
         self.saved_hidden_state_c = None
+        self.saved_mirrored_hidden_state_a = None
 
         # Counter for the number of transitions stored
         self.step = 0
@@ -111,6 +114,7 @@ class RolloutStorageCTS:
 
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
+        self._save_mirrored_hidden_states(transition.mirrored_hidden_states)
 
         # Increment the counter
         self.step += 1
@@ -297,6 +301,22 @@ class RolloutStorageCTS:
                     "teacher_envs": teacher_mini_batch_size,
                     "student_envs": student_mini_batch_size,
                 }
+                if self.saved_mirrored_hidden_state_a is not None:
+                    if self.saved_hidden_state_c is None:
+                        teacher_mirrored_a = self._get_initial_hidden_state_segment(
+                            self.saved_mirrored_hidden_state_a, teacher_start, teacher_stop
+                        )
+                    else:
+                        teacher_mirrored_a = self._get_hidden_state_segment(
+                            self.saved_mirrored_hidden_state_a, teacher_start, teacher_stop
+                        )
+                    student_mirrored_a = self._get_hidden_state_segment(
+                        self.saved_mirrored_hidden_state_a, student_start, student_stop
+                    )
+                    masks_batch["mirrored_hidden_states"] = (
+                        _cat_hidden_state(teacher_mirrored_a, student_mirrored_a),
+                        hidden_state_c_batch,
+                    )
 
                 yield (
                     obs_batch,
@@ -369,3 +389,15 @@ class RolloutStorageCTS:
         if hidden_state_c is not None:
             for i in range(len(hidden_state_c)):
                 self.saved_hidden_state_c[i][self.step].copy_(hidden_state_c[i])
+
+    def _save_mirrored_hidden_states(self, hidden_states: tuple[HiddenState, HiddenState]) -> None:
+        hidden_state_a = hidden_states[0]
+        if hidden_state_a is None:
+            return
+        hidden_state_a = hidden_state_a if isinstance(hidden_state_a, tuple) else (hidden_state_a,)
+        if self.saved_mirrored_hidden_state_a is None:
+            self.saved_mirrored_hidden_state_a = [
+                torch.zeros(self.observations.shape[0], *h.shape, device=self.device) for h in hidden_state_a
+            ]
+        for i, h in enumerate(hidden_state_a):
+            self.saved_mirrored_hidden_state_a[i][self.step].copy_(h)

@@ -26,6 +26,7 @@ import cli_args  # isort: skip
 from utils import (
     apply_moe_gating_cfg,
     export_cts_cnn_gru_policy_as_jit,
+    sync_depth_aux_heads_from_checkpoint,
     export_cts_policy_as_jit,
     export_cts_policy_as_onnx,
     log_moe_gating,
@@ -257,6 +258,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+    sync_depth_aux_heads_from_checkpoint(agent_cfg, resume_path)
     # load previously trained model
     if agent_cfg.class_name == "OnPolicyRunner":
         runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)

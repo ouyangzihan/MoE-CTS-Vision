@@ -924,17 +924,17 @@ class RewardsCfg:
     )
     joint_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
-        weight=-1.0e-8, # -1.0e-7,
+        weight=-5.0e-8, # -1.0e-7,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     joint_power = RewTerm(
         func=mdp.joint_power,
-        weight=-2e-6, # -2e-5,
+        weight=-1e-5, # -2e-5,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     joint_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-1e-5, # -1e-4,
+        weight=-5e-5, # -1e-4,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     base_height_l2 = RewTerm(
@@ -965,6 +965,15 @@ class RewardsCfg:
                 body_names=".*_hip|.*_thigh|.*calf|Head_.*|.*_foot_motor|camera_base",
             ),
             "threshold": 5.0,
+        },
+    )
+    # Penalize a foot striking a vertical surface (horizontal contact >> normal).
+    # The term is in [0, 1]; negative weight makes it a penalty.
+    feet_stumble = RewTerm(
+        func=mdp.feet_stumble,
+        weight=-1.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
         },
     )
     # Encourage hopping over gaps: per-landing reward sum(last_air_time - threshold).
@@ -1153,8 +1162,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "joint_pos_penalty_l1",
-            "initial_weight": -0.0008, # -0.008,
-            "final_weight": -0.0008, # -0.01, # -0.15,
+            "initial_weight": -0.004, # -0.008,
+            "final_weight": -0.004, # -0.01, # -0.15,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1163,8 +1172,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "hip_pos_penalty_l1",
-            "initial_weight": -0.004, # -0.04,
-            "final_weight": -0.004, # -0.05, # -0.75,
+            "initial_weight": -0.02, # -0.04,
+            "final_weight": -0.02, # -0.05, # -0.75,
             "start_it": 0,
             "end_it": 5000,
         },
