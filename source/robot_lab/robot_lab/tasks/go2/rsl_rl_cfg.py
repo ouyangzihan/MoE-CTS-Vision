@@ -121,7 +121,7 @@ class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     use_clipped_value_loss = True
     clip_param = 0.2
     # Ceiling of the std controller. Fixed when adaptive_entropy is False.
-    entropy_coef = 0.005
+    entropy_coef = 0.001
     adaptive_entropy = False
     # Hold mean action std near this value. Inside ±entropy_std_deadband the coef does not move.
     # Outside that band it changes by at most entropy_coef_max_step (2%) per iteration.
