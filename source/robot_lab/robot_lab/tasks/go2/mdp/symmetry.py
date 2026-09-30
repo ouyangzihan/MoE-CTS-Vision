@@ -226,7 +226,7 @@ class Go2SymmetryMapper:
             return self.reverse_vector(value, self.VECTOR_SIGNS[name])
         if name in self.JOINT_TERMS:
             return self.reverse_joints(value)
-        if name == "contact_force":
+        if name in {"contact_force", "foot_contact_state"}:
             return self.reverse_feet(value)
         if name.endswith("height_scan"):
             return self.reverse_height_scan(cfg, value)

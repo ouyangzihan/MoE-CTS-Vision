@@ -398,7 +398,10 @@ def export_cts_cnn_gru_policy_as_jit(
       forward(single_obs[1,53], depth[1,T*3600]) -> actions[1,16]
     Internal: term-major proprio history + GRU hidden state.
     """
-    exporter = _TorchCNNGRUPolicyExporter(policy, actor_obs_normalizer, single_obs_normalizer)
+    if getattr(policy, "state_estimator", None) is not None:
+        exporter = _TorchCNNGRUPolicyExporterWithEstimator(policy, actor_obs_normalizer, single_obs_normalizer)
+    else:
+        exporter = _TorchCNNGRUPolicyExporter(policy, actor_obs_normalizer, single_obs_normalizer)
     exporter.export(path, filename)
 
 
@@ -520,3 +523,37 @@ class _TorchCNNGRUPolicyExporter(torch.nn.Module):
         self.eval()
         traced_script_module = torch.jit.script(self)
         traced_script_module.save(path)
+
+
+class _TorchCNNGRUPolicyExporterWithEstimator(_TorchCNNGRUPolicyExporter):
+    """Same deploy interface, with the state estimate concatenated into the actor."""
+
+    def __init__(self, policy, actor_obs_normalizer=None, single_obs_normalizer=None):
+        super().__init__(policy, actor_obs_normalizer, single_obs_normalizer)
+        self.state_estimator = copy.deepcopy(policy.state_estimator)
+
+    def forward(self, single_obs: torch.Tensor, depth: torch.Tensor):
+        if single_obs.dim() == 1:
+            single_obs = single_obs.unsqueeze(0)
+        if depth.dim() == 1:
+            depth = depth.unsqueeze(0)
+        if single_obs.shape[-1] != self.num_single_obs:
+            raise ValueError(
+                f"Expected single_obs last dimension {self.num_single_obs}, got {single_obs.shape[-1]}."
+            )
+        if depth.shape[-1] != self.depth_dim:
+            raise ValueError(f"Expected depth last dimension {self.depth_dim}, got {depth.shape[-1]}.")
+        if single_obs.shape[0] != 1 or depth.shape[0] != 1:
+            raise ValueError("TorchScript CNN-GRU CTS deployment currently supports batch size 1 only.")
+
+        obs_history = self._update_obs_history(single_obs)
+        image_feature = self._encode_depth(depth)
+        obs_a = self.actor_obs_normalizer(obs_history)
+        moe_input = torch.cat([obs_a, image_feature], dim=-1)
+        latent, _ = self.student_moe_encoder(moe_input)
+        actor_estimate, _, _ = self.state_estimator(moe_input)
+        single_obs_n = self.single_obs_normalizer(single_obs)
+        latent_and_obs = torch.cat([latent, single_obs_n, actor_estimate], dim=-1)
+        if self.state_dependent_std:
+            return self.actor(latent_and_obs)[..., 0, :]
+        return self.actor(latent_and_obs)

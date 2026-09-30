@@ -175,6 +175,7 @@ class OnPolicyRunnerCTS:
             "optimizer_stu_enc_state_dict": self.alg.optimizer_stu_enc.state_dict(),
             "iter": self.current_learning_iteration,
             "infos": infos,
+            "entropy_coef": self.alg.entropy_coef,
         }
         # Save RND model if used
         if self.alg_cfg["rnd_cfg"]:
@@ -284,6 +285,11 @@ class OnPolicyRunnerCTS:
         # Load current learning iteration
         if resumed_training:
             self.current_learning_iteration = loaded_dict["iter"]
+            if "entropy_coef" in loaded_dict:
+                self.alg.entropy_coef = min(
+                    self.alg.entropy_coef_max,
+                    max(self.alg.entropy_coef_min, float(loaded_dict["entropy_coef"])),
+                )
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device: str | None = None) -> callable:

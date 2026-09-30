@@ -669,6 +669,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 agent_cfg.algorithm.depth_align_coef = 0.0
         print(f"[INFO] use_mgdp_depth_aux={enabled} (enable_depth_aux synced for checkpoint load)")
 
+    if hasattr(env_cfg, "use_state_estimator"):
+        if hasattr(env_cfg, "apply_state_estimator_settings"):
+            env_cfg.apply_state_estimator_settings()
+        estimator_enabled = bool(env_cfg.use_state_estimator)
+        if hasattr(agent_cfg, "policy") and hasattr(agent_cfg.policy, "enable_state_estimator"):
+            agent_cfg.policy.enable_state_estimator = estimator_enabled
+        if hasattr(agent_cfg, "algorithm") and not estimator_enabled:
+            agent_cfg.algorithm.state_estimator_vel_coef = 0.0
+            agent_cfg.algorithm.state_estimator_contact_coef = 0.0
+        print(f"[INFO] use_state_estimator={estimator_enabled} (enable_state_estimator synced for checkpoint load)")
+
     apply_moe_gating_cfg(agent_cfg)
 
     env_cfg.scene.num_envs = 1

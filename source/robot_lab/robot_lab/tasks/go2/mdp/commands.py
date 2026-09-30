@@ -344,6 +344,30 @@ class Go2RLGymCommand(CommandTerm):
         k = torch.where(u_count >= (p0 + p1 + p2), torch.full((n,), 3, dtype=torch.long, device=self.device), k)
 
         axis_choice = torch.randint(0, 3, (n,), device=self.device)
+        single_axis_prob = self.cfg.single_axis_prob
+        if single_axis_prob is not None:
+            weights = torch.tensor(
+                self._axis_mixture_prob_triple(single_axis_prob),
+                device=self.device,
+                dtype=torch.float,
+            )
+            weight_sum = float(weights.sum())
+            if weight_sum <= 0.0:
+                raise ValueError("single_axis_prob must sum to a positive value")
+            weights = weights / weight_sum
+            weighted_choice = torch.multinomial(weights.expand(n, 3), num_samples=1).squeeze(1)
+            axis_choice = torch.where(k == 1, weighted_choice, axis_choice)
+        pair_axis_prob = self.cfg.pair_axis_prob
+        if pair_axis_prob is not None:
+            # (vx+vy, vx+yaw, vy+yaw) is the pair kept; the stored index is the axis turned off.
+            vx_vy, vx_yaw, vy_yaw = self._axis_mixture_prob_triple(pair_axis_prob)
+            weights = torch.tensor((vy_yaw, vx_yaw, vx_vy), device=self.device, dtype=torch.float)
+            weight_sum = float(weights.sum())
+            if weight_sum <= 0.0:
+                raise ValueError("pair_axis_prob must sum to a positive value")
+            weights = weights / weight_sum
+            weighted_choice = torch.multinomial(weights.expand(n, 3), num_samples=1).squeeze(1)
+            axis_choice = torch.where(k == 2, weighted_choice, axis_choice)
         chosen = torch.zeros(n, 3, dtype=torch.bool, device=self.device)
         chosen.scatter_(1, axis_choice.unsqueeze(1), torch.ones(n, 1, dtype=torch.bool, device=self.device))
         active = torch.zeros(n, 3, dtype=torch.bool, device=self.device)
@@ -540,9 +564,22 @@ class Go2RLGymCommandCfg(CommandTermCfg):
     """If set, sample how many of ``(vx, vy, yaw)`` are active: ``(p0, p1, p2, p3)``.
 
     Inactive axes are 0. When 1 or 2 axes are active, the subset is uniform among
-    combinations of that size. ``axis_zero_prob`` is ignored in this mode.
+    combinations of that size, unless ``single_axis_prob`` or ``pair_axis_prob``
+    weights that draw. ``axis_zero_prob`` is ignored in this mode.
     Probabilities are normalized over this tuple. ``positive_vx_prob`` is applied
     first, so these weights are the mixture on the remaining probability mass.
+    """
+    single_axis_prob: tuple[float, float, float] | None = None
+    """Relative chance of ``(vx, vy, yaw)`` when exactly one axis is active.
+
+    Weights are normalized. ``None`` keeps a uniform draw. With one-axis mass 0.60
+    and weights ``(3, 1, 1)``, overall rates are 36% vx, 12% vy, and 12% yaw.
+    """
+    pair_axis_prob: tuple[float, float, float] | None = None
+    """Relative chance of ``(vx+vy, vx+yaw, vy+yaw)`` when exactly two axes are active.
+
+    Weights are normalized. ``None`` keeps a uniform draw among the three pairs.
+    ``(0.4, 0.4, 0.2)`` makes each vx pair twice as common as vy+yaw.
     """
     positive_vx_prob: float = 0.0
     """Probability of a vx-only command (vy = yaw = 0), sampled before the active-count mixture.

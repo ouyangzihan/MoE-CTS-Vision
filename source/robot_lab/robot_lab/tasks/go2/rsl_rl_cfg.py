@@ -5,7 +5,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 300000
-    save_interval = 1000
+    save_interval = 500
     experiment_name = "go2_rough" 
     
     policy = RslRlPpoActorCriticCfg(
@@ -20,7 +20,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,
+        entropy_coef=0.002,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,
@@ -77,6 +77,10 @@ class RslRlMoeCtsCnnGruActorCriticCfg(RslRlMoeCtsActorCriticCfg):
     depth_align_dim = 32
     clean_depth_obs_group = "clean_depth"
     height_map_obs_group = "height_map"
+    # Synced from Go2WD435iEnvCfg.use_state_estimator. False keeps latent + single_obs.
+    enable_state_estimator = False
+    estimator_hidden_dims = [512, 256]
+    estimator_target_obs_group = "estimator_target"
 
 
 @configclass
@@ -116,7 +120,15 @@ class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     detach_gate_in_student_surrogate = True  # PPO must not train the router (winner-take-all)
     use_clipped_value_loss = True
     clip_param = 0.2
+    # Ceiling of the std controller. Fixed when adaptive_entropy is False.
     entropy_coef = 0.005
+    adaptive_entropy = False
+    # Hold mean action std near this value. Inside ±entropy_std_deadband the coef does not move.
+    # Outside that band it changes by at most entropy_coef_max_step (2%) per iteration.
+    entropy_std_target = 1.25
+    entropy_std_deadband = 0.05
+    entropy_coef_min = 1.0e-4
+    entropy_coef_max_step = 0.02
     num_learning_epochs = 5
     num_mini_batches = 4
     learning_rate = 5e-4 # 1e-3
@@ -136,6 +148,9 @@ class RslRlMoeCtsAlgorithmCfg(RslRlPpoAlgorithmCfg):
     depth_align_coef = 0.0
     depth_align_loss_type = "infonce"  # MGDP default; also supports "mse"
     depth_align_temperature = 0.1
+    # Supervised state-estimator losses. Applied only when enable_state_estimator is True.
+    state_estimator_vel_coef = 1.0
+    state_estimator_contact_coef = 1.0
     redo_cfg = RslRlRedoCfg()
 
 @configclass
@@ -144,7 +159,7 @@ class MoECTSRunnerCfg(RslRlOnPolicyRunnerCfg):
     class_name = "OnPolicyRunnerCTS"
     num_steps_per_env = 24
     max_iterations = 300000
-    save_interval = 1000
+    save_interval = 500
     policy = RslRlMoeCtsActorCriticCfg()
     algorithm = RslRlMoeCtsAlgorithmCfg()
 

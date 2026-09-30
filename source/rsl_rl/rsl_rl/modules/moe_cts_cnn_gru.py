@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from typing import Any, NoReturn
+from typing import Any, NamedTuple, NoReturn
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tensordict import TensorDict
 from torch.distributions import Normal
 
@@ -212,6 +213,53 @@ class DepthCNNGRUEncoder(nn.Module):
         return self._cnn_feature_maps(image).flatten(1)
 
 
+class StateEstimator(nn.Module):
+    """Predict body linear velocity and a 3-way contact class for each foot.
+
+    The actor receives the 3 velocities plus one expected class per foot
+    (``sum_k k * p_k``). Those values are detached at the actor so this module
+    is trained only by the supervised loss against simulation.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dims: tuple[int, ...] | list[int],
+        num_feet: int = 4,
+        num_contact_classes: int = 3,
+    ) -> None:
+        super().__init__()
+        if len(hidden_dims) < 1:
+            raise ValueError("StateEstimator hidden_dims must contain at least one width.")
+        self.num_feet = int(num_feet)
+        self.num_contact_classes = int(num_contact_classes)
+        self.trunk = MLP(input_dim, hidden_dims[-1], list(hidden_dims[:-1]), activation="elu", last_activation="elu")
+        self.vel_head = nn.Linear(hidden_dims[-1], 3)
+        self.contact_head = nn.Linear(hidden_dims[-1], self.num_feet * self.num_contact_classes)
+        self.register_buffer(
+            "class_values",
+            torch.arange(self.num_contact_classes, dtype=torch.float32),
+            persistent=False,
+        )
+
+    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        hidden = self.trunk(features)
+        vel = self.vel_head(hidden)
+        # Features are flattened to [N, D] before this module (see _run_estimator).
+        logits = self.contact_head(hidden).reshape(-1, self.num_feet, self.num_contact_classes)
+        expected_class = (F.softmax(logits, dim=-1) * self.class_values).sum(dim=-1)
+        actor_estimate = torch.cat([vel, expected_class], dim=-1)
+        return actor_estimate, vel, logits
+
+
+class StudentForward(NamedTuple):
+    latent: torch.Tensor
+    weights: torch.Tensor
+    actor_estimate: torch.Tensor | None = None
+    vel: torch.Tensor | None = None
+    contact_logits: torch.Tensor | None = None
+
+
 class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
     """MoE CTS actor-critic with a depth CNN-GRU encoder for the student."""
 
@@ -253,6 +301,9 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         depth_align_dim: int = 32,
         clean_depth_obs_group: str = "clean_depth",
         height_map_obs_group: str = "height_map",
+        enable_state_estimator: bool = False,
+        estimator_hidden_dims: tuple[int, ...] | list[int] = (512, 256),
+        estimator_target_obs_group: str = "estimator_target",
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -344,8 +395,34 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
             f"gating_noise_std={self.student_moe_encoder.moe.gating_noise_std}"
         )
 
+        self.enable_state_estimator = bool(enable_state_estimator)
+        self.estimator_target_obs_group = estimator_target_obs_group
+        self.state_estimator: StateEstimator | None = None
+        self.estimator_actor_dim = 0
+        if self.enable_state_estimator:
+            if estimator_target_obs_group not in obs.keys():
+                raise ValueError(
+                    "enable_state_estimator=True requires observation group "
+                    f"{estimator_target_obs_group!r}. Set Go2WD435iEnvCfg.use_state_estimator=True."
+                )
+            target_dim = int(obs[estimator_target_obs_group].shape[-1])
+            if target_dim <= 3:
+                raise ValueError(
+                    f"Estimator target dim must be 3 velocity + one class per foot, got {target_dim}."
+                )
+            num_feet = target_dim - 3
+            self.state_estimator = StateEstimator(
+                input_dim=self.num_actor_obs + gru_hidden_dim,
+                hidden_dims=list(estimator_hidden_dims),
+                num_feet=num_feet,
+            )
+            self.estimator_actor_dim = 3 + num_feet
+            print(f"State estimator: {self.state_estimator}")
+        else:
+            print("[INFO] State estimator disabled (actor input is latent + single_obs).")
+
         self.state_dependent_std = state_dependent_std
-        actor_input_dim = latent_dim + self.num_single_obs
+        actor_input_dim = latent_dim + self.num_single_obs + self.estimator_actor_dim
         if self.state_dependent_std:
             self.actor = MLP(actor_input_dim, [2, num_actions], list(actor_hidden_dims), activation)
         else:
@@ -484,6 +561,79 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
             obs_c = unpad_trajectories(obs_c, masks)
         return obs_c
 
+    def _actor_input(
+        self,
+        latent: torch.Tensor,
+        single_obs: torch.Tensor,
+        estimate: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Concatenates actor inputs. ``estimate`` is detached so PPO does not train it."""
+        if estimate is None:
+            return torch.cat([latent, single_obs], dim=-1)
+        return torch.cat([latent, single_obs, estimate.detach()], dim=-1)
+
+    def _deployable_features(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_state: torch.Tensor | None = None,
+        update_memory: bool = False,
+    ) -> torch.Tensor:
+        obs_a = self._normalize_actor_obs(obs, masks)
+        image = self._image_obs(obs, self.actor_image_obs_groups)
+        image_feature = self.student_cnn_gru(image, masks=masks, hidden_state=hidden_state, update_hidden=update_memory)
+        return torch.cat([obs_a, image_feature], dim=-1)
+
+    def _encode_moe(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if features.ndim > 2:
+            leading_shape = features.shape[:-1]
+            latent, weights = self.student_moe_encoder(features.reshape(-1, features.shape[-1]))
+            return (
+                latent.reshape(*leading_shape, latent.shape[-1]),
+                weights.reshape(*leading_shape, weights.shape[-1]),
+            )
+        return self.student_moe_encoder(features)
+
+    def _run_estimator(
+        self, features: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.state_estimator is None:
+            raise RuntimeError("State estimator is disabled.")
+        if features.ndim > 2:
+            leading_shape = features.shape[:-1]
+            actor_estimate, vel, logits = self.state_estimator(features.reshape(-1, features.shape[-1]))
+            return (
+                actor_estimate.reshape(*leading_shape, actor_estimate.shape[-1]),
+                vel.reshape(*leading_shape, vel.shape[-1]),
+                logits.reshape(*leading_shape, logits.shape[-2], logits.shape[-1]),
+            )
+        return self.state_estimator(features)
+
+    def student_forward(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_state: torch.Tensor | None = None,
+        update_memory: bool = False,
+        with_estimate: bool = False,
+    ) -> StudentForward:
+        features = self._deployable_features(obs, masks=masks, hidden_state=hidden_state, update_memory=update_memory)
+        latent, weights = self._encode_moe(features)
+        if not with_estimate or self.state_estimator is None:
+            return StudentForward(latent, weights)
+        actor_estimate, vel, logits = self._run_estimator(features)
+        return StudentForward(latent, weights, actor_estimate, vel, logits)
+
+    def estimate_state(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Estimator forward only. Does not run the MoE or advance a fresh router cache."""
+        features = self._deployable_features(obs, masks=masks, hidden_state=hidden_state, update_memory=False)
+        return self._run_estimator(features)
+
     def student_latent(
         self,
         obs: TensorDict,
@@ -491,15 +641,8 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         hidden_state: torch.Tensor | None = None,
         update_memory: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        obs_a = self._normalize_actor_obs(obs, masks)
-        image = self._image_obs(obs, self.actor_image_obs_groups)
-        image_feature = self.student_cnn_gru(image, masks=masks, hidden_state=hidden_state, update_hidden=update_memory)
-        moe_input = torch.cat([obs_a, image_feature], dim=-1)
-        if moe_input.ndim > 2:
-            leading_shape = moe_input.shape[:-1]
-            latent, weights = self.student_moe_encoder(moe_input.reshape(-1, moe_input.shape[-1]))
-            return latent.reshape(*leading_shape, latent.shape[-1]), weights.reshape(*leading_shape, weights.shape[-1])
-        return self.student_moe_encoder(moe_input)
+        out = self.student_forward(obs, masks=masks, hidden_state=hidden_state, update_memory=update_memory)
+        return out.latent, out.weights
 
     def compute_depth_aux_losses(
         self,
@@ -585,20 +728,32 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         single_obs = self.single_obs_normalizer(obs["single_obs"])
         if masks is not None:
             single_obs = unpad_trajectories(single_obs, masks)
+        estimate = None
         if is_teacher:
             latent = self.teacher_latent(obs, masks=masks, hidden_state=hidden_state, update_memory=masks is None)
+            if self.state_estimator is not None:
+                with torch.no_grad():
+                    estimate, _, _ = self.estimate_state(obs, masks=masks, hidden_state=hidden_state)
         else:
             # Detached for rollout and the actor PPO step. Walking advantage reaches the
             # CNN through MoECTS._student_encoder_ppo_surrogate on the student optimizer.
             with torch.no_grad():
-                latent, _ = self.student_latent(obs, masks=masks, hidden_state=hidden_state, update_memory=masks is None)
-        self._update_distribution(torch.cat([latent, single_obs], dim=-1))
+                out = self.student_forward(
+                    obs,
+                    masks=masks,
+                    hidden_state=hidden_state,
+                    update_memory=masks is None,
+                    with_estimate=self.state_estimator is not None,
+                )
+                latent = out.latent
+                estimate = out.actor_estimate
+        self._update_distribution(self._actor_input(latent, single_obs, estimate))
         return self.distribution.sample()
 
     def act_inference(self, obs: TensorDict) -> torch.Tensor:
         single_obs = self.single_obs_normalizer(obs["single_obs"])
-        latent, _ = self.student_latent(obs, update_memory=True)
-        latent_and_obs = torch.cat([latent, single_obs], dim=-1)
+        out = self.student_forward(obs, update_memory=True, with_estimate=self.state_estimator is not None)
+        latent_and_obs = self._actor_input(out.latent, single_obs, out.actor_estimate)
         if self.state_dependent_std:
             return self.actor(latent_and_obs)[..., 0, :]
         return self.actor(latent_and_obs)
@@ -612,12 +767,12 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         single_obs = self.single_obs_normalizer(obs["single_obs"])
         teacher_latent = self.teacher_latent(obs, update_memory=True)
         with torch.no_grad():
-            student_latent, _ = self.student_latent(obs, update_memory=True)
+            student_out = self.student_forward(obs, update_memory=True, with_estimate=self.state_estimator is not None)
 
         latent = torch.empty_like(teacher_latent)
         latent[teacher_env_idxs] = teacher_latent[teacher_env_idxs]
-        latent[student_env_idxs] = student_latent[student_env_idxs]
-        self._update_distribution(torch.cat([latent, single_obs], dim=-1))
+        latent[student_env_idxs] = student_out.latent[student_env_idxs]
+        self._update_distribution(self._actor_input(latent, single_obs, student_out.actor_estimate))
         actions = self.distribution.sample()
 
         obs_c = self._normalize_critic_obs(obs)
@@ -684,7 +839,10 @@ class ActorCriticMoECTSCNNGRU(ActorCriticMoECTS):
         ]
 
     def student_encoder_parameters(self):
-        return list(self.student_cnn_gru.parameters()) + list(self.student_moe_encoder.parameters())
+        params = list(self.student_cnn_gru.parameters()) + list(self.student_moe_encoder.parameters())
+        if self.state_estimator is not None:
+            params += list(self.state_estimator.parameters())
+        return params
 
     def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         super().load_state_dict(state_dict, strict=strict)

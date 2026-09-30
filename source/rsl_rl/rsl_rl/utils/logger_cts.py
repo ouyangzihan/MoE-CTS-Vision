@@ -218,7 +218,9 @@ class LoggerCTS:
 
             # Print losses
             for key, value in loss_dict.items():
-                if key.startswith("redo/"):
+                if key == "entropy_coef":
+                    log_string += f"""{"Entropy coefficient:":>{pad}} {value:.6f}\n"""
+                elif key.startswith("redo/"):
                     log_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
                 else:
                     log_string += f"""{f"Mean {key} loss:":>{pad}} {value:.4f}\n"""

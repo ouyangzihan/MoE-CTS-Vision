@@ -236,6 +236,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
               f"height={getattr(getattr(agent_cfg, 'algorithm', None), 'height_recon_coef', None)}, "
               f"align={getattr(getattr(agent_cfg, 'algorithm', None), 'depth_align_coef', None)})")
 
+    if hasattr(env_cfg, "use_state_estimator"):
+        if hasattr(env_cfg, "apply_state_estimator_settings"):
+            env_cfg.apply_state_estimator_settings()
+        estimator_enabled = bool(env_cfg.use_state_estimator)
+        if hasattr(agent_cfg, "policy") and hasattr(agent_cfg.policy, "enable_state_estimator"):
+            agent_cfg.policy.enable_state_estimator = estimator_enabled
+        if hasattr(agent_cfg, "algorithm"):
+            if estimator_enabled:
+                if getattr(agent_cfg.algorithm, "state_estimator_vel_coef", 0.0) == 0.0:
+                    agent_cfg.algorithm.state_estimator_vel_coef = 1.0
+                if getattr(agent_cfg.algorithm, "state_estimator_contact_coef", 0.0) == 0.0:
+                    agent_cfg.algorithm.state_estimator_contact_coef = 1.0
+            else:
+                agent_cfg.algorithm.state_estimator_vel_coef = 0.0
+                agent_cfg.algorithm.state_estimator_contact_coef = 0.0
+        print(
+            f"[INFO] use_state_estimator={estimator_enabled} "
+            f"(vel_coef={getattr(getattr(agent_cfg, 'algorithm', None), 'state_estimator_vel_coef', None)}, "
+            f"contact_coef={getattr(getattr(agent_cfg, 'algorithm', None), 'state_estimator_contact_coef', None)})"
+        )
+
     # Re-apply after Hydra from_dict so task MoE width/gating cannot inherit another task's student.
     apply_moe_gating_cfg(agent_cfg)
 

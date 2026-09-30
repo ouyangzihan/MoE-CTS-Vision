@@ -41,6 +41,11 @@ class MoECTS:
         weight_decay: float = 0.0,
         value_loss_coef: float = 1.0,
         entropy_coef: float = 0.01,
+        adaptive_entropy: bool = False,
+        entropy_std_target: float = 1.25,
+        entropy_std_deadband: float = 0.05,
+        entropy_coef_min: float = 1.0e-4,
+        entropy_coef_max_step: float = 0.02,
         load_balance_coef: float = 0.01,
         router_z_loss_coef: float = 0.001,
         detach_gate_in_student_surrogate: bool = True,
@@ -58,6 +63,8 @@ class MoECTS:
         depth_align_coef: float = 0.0,
         depth_align_loss_type: str = "infonce",
         depth_align_temperature: float = 0.1,
+        state_estimator_vel_coef: float = 1.0,
+        state_estimator_contact_coef: float = 1.0,
         symmetry: Go2MoECTSSymmetry | None = None,
         redo_cfg: dict | None = None,
         # RND parameters
@@ -132,7 +139,13 @@ class MoECTS:
         self.num_learning_epochs = num_learning_epochs
         self.num_mini_batches = num_mini_batches
         self.value_loss_coef = value_loss_coef
-        self.entropy_coef = entropy_coef
+        self.entropy_coef = float(entropy_coef)
+        self.entropy_coef_max = float(entropy_coef)
+        self.adaptive_entropy = bool(adaptive_entropy)
+        self.entropy_std_target = float(entropy_std_target)
+        self.entropy_std_deadband = float(entropy_std_deadband)
+        self.entropy_coef_min = float(entropy_coef_min)
+        self.entropy_coef_max_step = float(entropy_coef_max_step)
         self.load_balance_coef = load_balance_coef
         self.router_z_loss_coef = router_z_loss_coef
         self.detach_gate_in_student_surrogate = detach_gate_in_student_surrogate
@@ -149,6 +162,8 @@ class MoECTS:
         self.depth_align_coef = float(depth_align_coef)
         self.depth_align_loss_type = str(depth_align_loss_type)
         self.depth_align_temperature = float(depth_align_temperature)
+        self.state_estimator_vel_coef = float(state_estimator_vel_coef)
+        self.state_estimator_contact_coef = float(state_estimator_contact_coef)
         
         # Teacher-student environment split.
         # Single-env play/eval uses the student (deployed) policy only: forcing a teacher
@@ -353,7 +368,52 @@ class MoECTS:
         if not self.normalize_advantage_per_mini_batch:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
+    def _mean_action_std(self) -> torch.Tensor:
+        """Mean action noise matching Policy/mean_noise_std for a state-independent std."""
+        if not getattr(self.policy, "state_dependent_std", False):
+            std_param = getattr(self.policy, "std", None)
+            if isinstance(std_param, torch.nn.Parameter):
+                return std_param.detach().mean()
+            log_std = getattr(self.policy, "log_std", None)
+            if isinstance(log_std, torch.nn.Parameter):
+                return torch.exp(log_std.detach()).mean()
+        return self.storage.sigma.detach().mean()
+
+    def _adapt_entropy_coef(self) -> None:
+        """Nudge the entropy coef toward the action-std target by at most a few percent per iteration.
+
+        Action std reacts to the coef only after several updates, so a large cut every iteration
+        stacks before the std can turn. The step is proportional to the distance outside the
+        deadband and capped by entropy_coef_max_step.
+        """
+        if not self.adaptive_entropy:
+            return
+        mean_std = self._mean_action_std()
+        if self.is_multi_gpu:
+            torch.distributed.all_reduce(mean_std, op=torch.distributed.ReduceOp.SUM)
+            mean_std = mean_std / self.gpu_world_size
+        if self.gpu_global_rank == 0:
+            mean_std_value = float(mean_std.item())
+            target = self.entropy_std_target
+            excess = mean_std_value - (target + self.entropy_std_deadband)
+            deficit = (target - self.entropy_std_deadband) - mean_std_value
+            step = 0.0
+            if excess > 0.0:
+                step = -min(self.entropy_coef_max_step, excess / target)
+            elif deficit > 0.0:
+                step = min(self.entropy_coef_max_step, deficit / target)
+            if step != 0.0:
+                self.entropy_coef = min(
+                    self.entropy_coef_max,
+                    max(self.entropy_coef_min, self.entropy_coef * (1.0 + step)),
+                )
+        if self.is_multi_gpu:
+            coef_tensor = torch.tensor(self.entropy_coef, device=self.device)
+            torch.distributed.broadcast(coef_tensor, src=0)
+            self.entropy_coef = float(coef_tensor.item())
+
     def update(self, learning_iteration: int | None = None) -> dict[str, float]:
+        self._adapt_entropy_coef()
         if self.policy.is_recurrent:
             return self._update_recurrent(learning_iteration=learning_iteration)
 
@@ -606,6 +666,7 @@ class MoECTS:
             "value": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
+            "entropy_coef": self.entropy_coef,
             "mean_latent_loss": mean_latent_loss,
             "mean_load_balance_loss": mean_load_balance_loss,
             "moe/router_z_loss": mean_router_z_loss,
@@ -660,6 +721,7 @@ class MoECTS:
         actions: torch.Tensor,
         advantages: torch.Tensor,
         old_actions_log_prob: torch.Tensor,
+        estimate: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Clipped PPO surrogate through ``latent`` with actor / std weights frozen.
 
@@ -689,7 +751,7 @@ class MoECTS:
         try:
             for param in frozen:
                 param.requires_grad_(False)
-            self.policy._update_distribution(torch.cat([latent, single_obs], dim=-1))
+            self.policy._update_distribution(self.policy._actor_input(latent, single_obs, estimate))
             log_prob = self.policy.get_actions_log_prob(actions)
             ratio = torch.exp(log_prob - torch.squeeze(old_actions_log_prob))
             adv = torch.squeeze(advantages)
@@ -743,6 +805,29 @@ class MoECTS:
             return self._flatten_time_env(mixed)
         return mixed
 
+    def _estimator_supervised_loss(
+        self,
+        vel: torch.Tensor,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """MSE on body linear velocity and cross-entropy on per-foot contact class."""
+        vel_f = vel.reshape(-1, 3)
+        logits_f = logits.reshape(-1, logits.shape[-1])
+        target_f = target.reshape(-1, target.shape[-1])
+        vel_loss = (vel_f - target_f[:, :3]).pow(2).mean()
+        classes = target_f[:, 3:].reshape(-1).long()
+        contact_loss = torch.nn.functional.cross_entropy(logits_f, classes)
+        with torch.no_grad():
+            contact_acc = (logits_f.argmax(dim=-1) == classes).float().mean()
+        return vel_loss, contact_loss, contact_acc
+
+    def _estimator_target(self, obs: TensorDict, masks: torch.Tensor | None) -> torch.Tensor:
+        target = obs[self.policy.estimator_target_obs_group]
+        if masks is not None:
+            target = unpad_trajectories(target, masks)
+        return target
+
     def _update_recurrent(self, learning_iteration: int | None = None) -> dict[str, float]:
         mean_value_loss = 0
         mean_surrogate_loss = 0
@@ -754,6 +839,10 @@ class MoECTS:
         mean_height_recon_loss = 0
         mean_depth_align_loss = 0
         mean_student_surrogate_loss = 0
+        mean_estimator_vel_loss = 0.0
+        mean_estimator_contact_loss = 0.0
+        mean_estimator_contact_acc = 0.0
+        estimator_enabled = getattr(self.policy, "state_estimator", None) is not None
         mean_latent_loss_original = 0.0
         mean_latent_loss_mirrored = 0.0
         moe_gate_prob_sum = None
@@ -963,11 +1052,14 @@ class MoECTS:
                 with torch.no_grad():
                     advantages_flat = (advantages_flat - advantages_flat.mean()) / (advantages_flat.std() + 1e-8)
 
-            student_latent, gating_weights = self.policy.student_latent(
+            student_out = self.policy.student_forward(
                 student_obs,
                 masks=student_masks,
                 hidden_state=self._slice_hidden_state(student_hidden_state, teacher_trajectories, None),
+                with_estimate=estimator_enabled,
             )
+            student_latent, gating_weights = student_out.latent, student_out.weights
+            # Capture the student MoE cache before any later encoder forward.
             ppo_latent = self._student_ppo_latent(student_latent)
             with torch.no_grad():
                 teacher_latent = self.policy.teacher_latent(
@@ -1007,14 +1099,48 @@ class MoECTS:
 
             single_obs = self.policy.single_obs_normalizer(student_obs["single_obs"])
             single_obs = unpad_trajectories(single_obs, student_masks)
+            estimate_flat = None
+            if student_out.actor_estimate is not None:
+                estimate_flat = self._flatten_time_env(student_out.actor_estimate)
             student_surrogate = self._student_encoder_ppo_surrogate(
                 latent=ppo_latent,
                 single_obs=self._flatten_time_env(single_obs),
                 actions=actions_flat[teacher_samples:],
                 advantages=advantages_flat[teacher_samples:],
                 old_actions_log_prob=old_logp_flat[teacher_samples:],
+                estimate=estimate_flat,
             )
             student_loss = student_loss + student_surrogate
+
+            vel_loss = latent_loss.new_zeros(())
+            contact_loss = latent_loss.new_zeros(())
+            contact_acc = latent_loss.new_zeros(())
+            if estimator_enabled:
+                vel_parts = [student_out.vel]
+                logit_parts = [student_out.contact_logits]
+                target_parts = [self._estimator_target(student_obs, student_masks)]
+                if teacher_trajectories > 0:
+                    teacher_obs = obs_batch[:, :teacher_trajectories]
+                    teacher_est_masks = masks[:, :teacher_trajectories]
+                    _, teacher_vel, teacher_logits = self.policy.estimate_state(
+                        teacher_obs,
+                        masks=teacher_est_masks,
+                        hidden_state=self._slice_hidden_state(student_hidden_state, 0, teacher_trajectories),
+                    )
+                    vel_parts.append(teacher_vel)
+                    logit_parts.append(teacher_logits)
+                    target_parts.append(self._estimator_target(teacher_obs, teacher_est_masks))
+                vel_loss, contact_loss, contact_acc = self._estimator_supervised_loss(
+                    torch.cat([part.reshape(-1, 3) for part in vel_parts], dim=0),
+                    torch.cat([part.reshape(-1, part.shape[-2], part.shape[-1]) for part in logit_parts], dim=0),
+                    torch.cat([part.reshape(-1, part.shape[-1]) for part in target_parts], dim=0),
+                )
+                if self.state_estimator_vel_coef > 0.0 or self.state_estimator_contact_coef > 0.0:
+                    student_loss = (
+                        student_loss
+                        + self.state_estimator_vel_coef * vel_loss
+                        + self.state_estimator_contact_coef * contact_loss
+                    )
 
             depth_denoise_loss = latent_loss.new_zeros(())
             height_recon_loss = latent_loss.new_zeros(())
@@ -1063,6 +1189,10 @@ class MoECTS:
             mean_depth_denoise_loss += float(depth_denoise_loss.detach().item())
             mean_height_recon_loss += float(height_recon_loss.detach().item())
             mean_depth_align_loss += float(depth_align_loss.detach().item())
+            if estimator_enabled:
+                mean_estimator_vel_loss += float(vel_loss.detach().item())
+                mean_estimator_contact_loss += float(contact_loss.detach().item())
+                mean_estimator_contact_acc += float(contact_acc.detach().item())
 
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
@@ -1081,6 +1211,7 @@ class MoECTS:
             "value": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
+            "entropy_coef": self.entropy_coef,
             "mean_latent_loss": mean_latent_loss,
             "mean_load_balance_loss": mean_load_balance_loss,
             "moe/router_z_loss": mean_router_z_loss,
@@ -1089,6 +1220,10 @@ class MoECTS:
             "mean_height_recon_loss": mean_height_recon_loss,
             "mean_depth_align_loss": mean_depth_align_loss,
         }
+        if estimator_enabled:
+            loss_dict["estimator/vel_mse"] = mean_estimator_vel_loss / num_updates
+            loss_dict["estimator/contact_ce"] = mean_estimator_contact_loss / num_updates
+            loss_dict["estimator/contact_acc"] = mean_estimator_contact_acc / num_updates
         if self.symmetry is not None:
             loss_dict["mean_latent_loss_original"] = mean_latent_loss_original / num_updates
             loss_dict["mean_latent_loss_mirrored"] = mean_latent_loss_mirrored / num_updates

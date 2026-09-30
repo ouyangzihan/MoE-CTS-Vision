@@ -87,7 +87,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     configure_command_delivery(env_cfg, use_pose_velocity=False)
     env_cfg.apply_velocity_command_mixture()
     env_cfg.apply_mgdp_depth_aux_settings()
+    if hasattr(env_cfg, "apply_state_estimator_settings"):
+        env_cfg.apply_state_estimator_settings()
     agent_cfg.policy.enable_depth_aux = bool(env_cfg.use_mgdp_depth_aux)
+    if hasattr(agent_cfg.policy, "enable_state_estimator"):
+        agent_cfg.policy.enable_state_estimator = bool(getattr(env_cfg, "use_state_estimator", False))
     apply_moe_gating_cfg(agent_cfg)
 
     env_cfg.scene.num_envs = args_cli.num_envs

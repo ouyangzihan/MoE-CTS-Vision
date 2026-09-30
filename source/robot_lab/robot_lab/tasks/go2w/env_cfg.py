@@ -40,6 +40,7 @@ ALL_JOINT_NAMES = LEG_JOINT_NAMES + WHEEL_JOINT_NAMES
 
 BASE_LINK_NAME = "base"
 FOOT_LINK_NAME = ".*_foot"
+FOOT_BODY_NAMES = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
 BASE_HEIGHT_TARGET = 0.409
 WHEEL_RADIUS = 0.087
 # Per-episode additive IMU gyro bias (rad/s), sampled uniformly at reset.
@@ -745,11 +746,45 @@ class D435iObservationsCfg(ObservationsCfg):
             self.enable_corruption = False
             self.concatenate_terms = True
 
+    @configclass
+    class EstimatorTargetCfg(ObsGroup):
+        """Simulation labels for the state estimator. Not an actor input.
+
+        ``base_lin_vel`` uses the critic scale (2.0). ``foot_contact_state`` is one
+        class per foot in FL, FR, RL, RR order: 0 airborne, 1 gripping, 2 sliding.
+        """
+
+        base_lin_vel = ObsTerm(
+            func=mdp.base_lin_vel,
+            clip=(-100.0, 100.0),
+            scale=2.0,
+        )
+        foot_contact_state = ObsTerm(
+            func=mdp.foot_contact_state,
+            params={
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_forces", body_names=FOOT_BODY_NAMES, preserve_order=True
+                ),
+                "asset_cfg": SceneEntityCfg(
+                    "robot", body_names=FOOT_BODY_NAMES, preserve_order=True
+                ),
+                "contact_threshold": 1.0,
+                "slip_speed_threshold": 0.15,
+                "contact_offset_body": (0.0, 0.0, -WHEEL_RADIUS),
+            },
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
     critic: CriticCfg = CriticCfg()
     depth: DepthCfg = DepthCfg()
     # Populated only when Go2WD435iEnvCfg.use_mgdp_depth_aux is True.
     clean_depth: CleanDepthCfg | None = None
     height_map: HeightMapCfg | None = None
+    # Populated only when Go2WD435iEnvCfg.use_state_estimator is True.
+    estimator_target: EstimatorTargetCfg | None = None
 
 
 @configclass
@@ -869,7 +904,7 @@ class RewardsCfg:
         weight=6.0,
         params={
             "command_name": "base_velocity",
-            "std": 0.707106781,
+            "std": .4,
             "boost_duration_s": 0.75,
             "boost_scale": 2.0,
             "weight_scale": 0.75,
@@ -881,7 +916,7 @@ class RewardsCfg:
         weight=3.0,
         params={
             "command_name": "base_velocity",
-            "std": 0.707106781,
+            "std": .4, # 0.707106781,
             "boost_duration_s": 0.75,
             "boost_scale": 2.0,
             "weight_scale": 0.75,
@@ -924,17 +959,17 @@ class RewardsCfg:
     )
     joint_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
-        weight=-5.0e-8, # -1.0e-7,
+        weight=-1.0e-7,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     joint_power = RewTerm(
         func=mdp.joint_power,
-        weight=-1e-5, # -2e-5,
+        weight=-5e-5, # -2e-5,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     joint_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-5e-5, # -1e-4,
+        weight=-1e-4,
         params={"asset_cfg": LEG_JOINT_SCENE_CFG},
     )
     base_height_l2 = RewTerm(
@@ -971,7 +1006,7 @@ class RewardsCfg:
     # The term is in [0, 1]; negative weight makes it a penalty.
     feet_stumble = RewTerm(
         func=mdp.feet_stumble,
-        weight=-1.0,
+        weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_LINK_NAME),
         },
@@ -1162,8 +1197,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "joint_pos_penalty_l1",
-            "initial_weight": -0.004, # -0.008,
-            "final_weight": -0.004, # -0.01, # -0.15,
+            "initial_weight": -0.008, # -0.008,
+            "final_weight": -0.05, # -0.01, # -0.15,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1172,8 +1207,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "hip_pos_penalty_l1",
-            "initial_weight": -0.02, # -0.04,
-            "final_weight": -0.02, # -0.05, # -0.75,
+            "initial_weight": -0.04, # -0.04,
+            "final_weight": -0.25, # -0.05, # -0.75,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1182,8 +1217,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "wheels_not_in_contact",
-            "initial_weight": -0.,
-            "final_weight": -0.,
+            "initial_weight": -0.1,
+            "final_weight": -0.1,
             "start_it": 0,
             "end_it": 5000,
         },
@@ -1212,8 +1247,8 @@ class CurriculumCfg:
         mdp.gradual_reward_weight_modification,
         params={
             "term_name": "local_terrain_tilt_angle",
-            "initial_weight": -0.0, # -0.3,
-            "final_weight": -0.0, # -0.6,
+            "initial_weight": -0.3, # -0.3,
+            "final_weight": -0.3, # -0.6,
             "start_it": 0,
             "end_it": 2500,
         },
@@ -1352,6 +1387,9 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
     # Master switch for MGDP-style depth aux training (denoise / height recon /
     # geometry alignment / harsher noise curriculum). False = current pipeline.
     use_mgdp_depth_aux: bool = False
+    # Body-velocity and per-foot contact estimator concatenated into the actor.
+    # False keeps the current actor input (latent + current proprioception only).
+    use_state_estimator: bool = True
     # Runtime noise overrides written by depth_noise_curriculum when aux is on.
     depth_noise_std: float = 0.0
     depth_dropout_prob: float = 0.
@@ -1411,6 +1449,17 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
                 self.curriculum.depth_noise = None
         del depth_term
 
+    def apply_state_estimator_settings(self) -> None:
+        """Add or remove privileged estimator labels from ``use_state_estimator``.
+
+        Hydra ``from_dict`` updates the flag after ``__post_init__`` without
+        re-running it, so play/train scripts must call this after overrides.
+        """
+        if self.use_state_estimator:
+            self.observations.estimator_target = D435iObservationsCfg.EstimatorTargetCfg()
+        else:
+            self.observations.estimator_target = None
+
     def apply_velocity_command_mixture(self) -> None:
         """Re-apply the D435i active-count mixture after command-delivery replacement.
 
@@ -1420,14 +1469,16 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
         cmd = getattr(getattr(self, "commands", None), "base_velocity", None)
         if cmd is None or not hasattr(cmd, "axis_active_count_prob"):
             return
-        # 5% none, 30% one axis, 15% two, 5% all three, 45% positive vx only.
-        # Positive vx: vy = yaw = 0; 50% range max, 50% uniform in [0, max].
-        # Other active axes: 35% range max, 35% range min, 30% uniform; then |cmd|<0.05 → 0.
-        cmd.axis_active_count_prob = (0.05, 0.30, 0.15, 0.05)
-        cmd.positive_vx_prob = 0.45
-        cmd.positive_vx_max_prob = 0.5
-        cmd.axis_max_prob = (0.35, 0.35, 0.35)
-        cmd.axis_min_prob = (0.35, 0.35, 0.35)
+        # 5% none, 60% one axis, 30% two, 5% all three.
+        # One axis: vx is 3x as likely as vy or yaw → 36% / 12% / 12% overall.
+        # Two axes: 40% vx+vy, 40% vx+yaw, 20% vy+yaw.
+        # Active axes: 25% range max, 25% range min, 50% uniform; then |cmd|<0.05 → 0.
+        cmd.axis_active_count_prob = (0.1, 0.60, 0.25, 0.05)
+        cmd.single_axis_prob = (3.0, 1.0, 1.0)
+        cmd.pair_axis_prob = (0.4, 0.4, 0.2)
+        cmd.positive_vx_prob = 0.0
+        cmd.axis_max_prob = (0.25, 0.25, 0.25)
+        cmd.axis_min_prob = (0.25, 0.25, 0.25)
         cmd.axis_deadzone = 0.05
 
     def __post_init__(self):
@@ -1436,6 +1487,7 @@ class Go2WD435iEnvCfg(Go2WEnvCfg):
         if self.scene.front_depth_camera is not None:
             self.scene.front_depth_camera.update_period = D435I_CAMERA_UPDATE_PERIOD
         self.apply_mgdp_depth_aux_settings()
+        self.apply_state_estimator_settings()
 
 
 @configclass
